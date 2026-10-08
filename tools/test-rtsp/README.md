@@ -8,10 +8,16 @@ test-pattern streams, so you can develop without a real IP camera.
 | `rtsp://127.0.0.1:8554/h264-720p` | H.264 Main | 1280×720 @ 30 | none |
 | `rtsp://127.0.0.1:8554/h264-1080p` | H.264 High | 1920×1080 @ 30 | none |
 | `rtsp://127.0.0.1:8554/h265-720p` | H.265 | 1280×720 @ 30 | none |
-| `rtsp://127.0.0.1:8554/mjpeg-720p` | MJPEG (RTP/JPEG) | 1280×720 @ 15 | none |
+| `rtsp://127.0.0.1:8554/mjpeg-720p` | MJPEG (RTP/JPEG) | 1280×720 @ 15 | none (see known issue) |
 | `rtsp://127.0.0.1:8554/secure` | H.264 | 1280×720 @ 30 | `rtspcam` / `rtspcam-test` |
 
 Port 8554 is used instead of 554 so nothing needs admin rights or clashes with a real server.
+
+> **Known issue (MJPEG):** mediamtx rejects the RTP/JPEG packets ffmpeg publishes
+> ("received wrong fragment" in its log), so `mjpeg-720p` answers DESCRIBE but never delivers
+> frames. `probe.ps1` only checks the SDP, so it still reports the stream as OK. Both
+> sides' fragment-offset logic looks correct and the cause hasn't been found yet. The MJPEG decoder
+> is covered by a JPEG fixture instead; test MJPEG streaming against a real camera.
 
 ## Run it
 
