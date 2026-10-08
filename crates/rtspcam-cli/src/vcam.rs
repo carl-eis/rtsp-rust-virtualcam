@@ -22,8 +22,11 @@ use rtspcam_pipeline::{
 use rtspcam_vcam_mgr::{MfThread, VirtualCamera, list_devices};
 use uuid::Uuid;
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFMediaSource, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MFCreateSourceReaderFromMediaSource, MFVideoFormat_NV12,
+    IMFActivate, IMFMediaSource, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_SUBTYPE, MF_SOURCE_READER_FIRST_VIDEO_STREAM, MFCreateAttributes, MFCreateDeviceSource,
+    MFCreateSourceReaderFromMediaSource, MFVideoFormat_NV12,
 };
 use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -44,6 +47,8 @@ pub(crate) enum VcamCommand {
     Add(AddArgs),
     /// Load the DLL in this process and read frames from it like a camera app would.
     Test(TestArgs),
+    /// Open a camera through Windows (Frame Server) like a camera app and read frames.
+    Read(ReadArgs),
 }
 
 #[derive(Debug, Args)]
@@ -70,6 +75,21 @@ pub(crate) struct AddArgs {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct ReadArgs {
+    /// Camera name (case-insensitive substring), as `vcam list` shows it.
+    name: String,
+    /// Seconds to read for.
+    #[arg(long, default_value_t = 5)]
+    seconds: u64,
+    /// Count distinct frames of the test pattern (camera made with `vcam add --pattern`).
+    #[arg(long)]
+    pattern: bool,
+    /// Save the last sample as BMP (NV12 1280x720 only).
+    #[arg(long, value_name = "FILE")]
+    snapshot: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct TestArgs {
     #[command(flatten)]
     dll: DllArg,
@@ -92,6 +112,7 @@ pub(crate) fn run(store: &ConfigStore, cmd: VcamCommand) -> anyhow::Result<ExitC
         VcamCommand::List => list(),
         VcamCommand::Add(a) => add(store, a),
         VcamCommand::Test(a) => test(a),
+        VcamCommand::Read(a) => read(a),
     }
 }
 
@@ -442,7 +463,30 @@ fn test(args: TestArgs) -> anyhow::Result<ExitCode> {
             &HSTRING::from(camera.to_string()),
         )?;
         let source: IMFMediaSource = activate.ActivateObject()?;
-        let reader = MFCreateSourceReaderFromMediaSource(&source, None)?;
+        let result = consume(
+            &source,
+            args.seconds,
+            args.pattern,
+            args.snapshot.as_deref(),
+        );
+        source.Shutdown()?;
+        result?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Reads from a media source like a camera app: prints its formats, reads for `seconds`,
+/// reports the frame rate (and distinct pattern frames), optionally saves the last frame.
+fn consume(
+    source: &IMFMediaSource,
+    seconds: u64,
+    pattern: bool,
+    snapshot: Option<&Path>,
+) -> anyhow::Result<()> {
+    // SAFETY: the reader and its samples and buffers are used per their contracts; the locked
+    // buffer is copied before Unlock.
+    unsafe {
+        let reader = MFCreateSourceReaderFromMediaSource(source, None)?;
         let stream = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
         println!("formats offered:");
@@ -467,7 +511,7 @@ fn test(args: TestArgs) -> anyhow::Result<ExitCode> {
         let mut samples = 0u32;
         let mut last: Option<Vec<u8>> = None;
         let mut counters = Vec::new();
-        while start.elapsed() < Duration::from_secs(args.seconds) {
+        while start.elapsed() < Duration::from_secs(seconds) {
             let (mut flags, mut sample) = (0u32, None);
             reader.ReadSample(stream, 0, None, Some(&mut flags), None, Some(&mut sample))?;
             let Some(sample) = sample else { continue };
@@ -477,7 +521,7 @@ fn test(args: TestArgs) -> anyhow::Result<ExitCode> {
             buffer.Lock(&mut ptr, None, Some(&mut len))?;
             let data = std::slice::from_raw_parts(ptr, len as usize).to_vec();
             buffer.Unlock()?;
-            if args.pattern && data.len() == 1280 * 720 * 3 / 2 {
+            if pattern && data.len() == 1280 * 720 * 3 / 2 {
                 counters.push(read_counter(&Frame::from_nv12(1280, 720, data.clone())));
             }
             last = Some(data);
@@ -487,22 +531,55 @@ fn test(args: TestArgs) -> anyhow::Result<ExitCode> {
             "read {samples} samples in {secs:.2} s = {:.1} fps",
             f64::from(samples) / secs
         );
-        if args.pattern {
+        if pattern {
             counters.dedup();
             println!("{} distinct pattern frames received", counters.len());
         }
-        if let (Some(path), Some(data)) = (&args.snapshot, last)
+        if let (Some(path), Some(data)) = (snapshot, last)
             && data.len() == 1280 * 720 * 3 / 2
         {
             crate::rtsp::save_bmp(path, &Frame::from_nv12(1280, 720, data))?;
             println!("snapshot: {}", path.display());
         }
-        source.Shutdown()?;
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(())
 }
 
 /// `rtspcam_vcam::RTSPCAM_ATTR_CAMERA_ID` (duplicated so the CLI doesn't link the DLL crate).
 fn rtspcam_vcam_attr_camera_id() -> GUID {
     GUID::from_u128(0xc5464fce_84dc_4420_8bc5_53830a558a46)
+}
+
+fn read(args: ReadArgs) -> anyhow::Result<ExitCode> {
+    let _mf = MfThread::init()?;
+    let wanted = args.name.to_lowercase();
+    let device = list_devices()?
+        .into_iter()
+        .find(|d| d.name.to_lowercase().contains(&wanted))
+        .with_context(|| format!("no camera matching \"{}\" (see `vcam list`)", args.name))?;
+    println!("opening {} ({})", device.name, device.symbolic_link);
+    // SAFETY: attribute store and device source creation per their contracts.
+    unsafe {
+        let mut attrs = None;
+        MFCreateAttributes(&mut attrs, 2)?;
+        let attrs = attrs.context("MFCreateAttributes")?;
+        attrs.SetGUID(
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+        )?;
+        attrs.SetString(
+            &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+            &HSTRING::from(device.symbolic_link.as_str()),
+        )?;
+        let source = MFCreateDeviceSource(&attrs)?;
+        let result = consume(
+            &source,
+            args.seconds,
+            args.pattern,
+            args.snapshot.as_deref(),
+        );
+        source.Shutdown()?;
+        result?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
