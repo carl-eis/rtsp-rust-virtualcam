@@ -9,11 +9,13 @@
 //! - [`scale`]: NV12 scaling with the configured fit mode, and NV12 → BGRA for the preview.
 //! - [`error`]: errors classified by what the user can do about them.
 //! - [`status`]: stream state and statistics.
+//! - [`pattern`]: an animated test pattern.
 
 pub mod bus;
 pub mod decode;
 pub mod error;
 pub mod frame;
+pub mod pattern;
 pub mod pipeline;
 pub mod scale;
 pub mod source;
