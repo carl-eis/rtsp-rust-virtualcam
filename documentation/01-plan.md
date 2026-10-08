@@ -10,6 +10,17 @@ A Windows desktop app, written in Rust, that:
 
 Not in scope for now: audio (a virtual microphone is a separate problem), recording, and acting as an RTSP server.
 
+### 1.1 Confirmed decisions
+
+| # | Decision |
+|---|---|
+| D1 | **Windows 11 only** (build 22000+) for now. Windows 10 / DirectShow support is deferred and not scheduled. |
+| D2 | **GUI toolkit: `winsafe`** (native Win32 controls). |
+| D3 | **RTSP only at first.** The config keeps a `protocol` field (default and only value `rtsp`) so more protocols can be added later without changing the schema. |
+| D4 | Streams are added with **IP/host, port, path, username and password**. **Config is stored as one JSON object.** |
+| D5 | **Quitting the app (for example "Quit" from the tray menu) terminates the process completely.** No background service, helper process or leftover virtual cameras stay behind. |
+| D6 | The app has a **"Minimize to tray" setting**. When it's on, minimizing hides the window and leaves only the tray icon. |
+
 ---
 
 ## 2. Research summary
@@ -22,7 +33,7 @@ Not in scope for now: audio (a virtual microphone is a separate problem), record
 | **B. DirectShow source filter** (OBS-virtualcam / `tshino/softcam` style) | A COM DLL registered as a "Video Input Device" filter. It is loaded **into each client app**, and frames come in through shared memory. | Works on Windows 10. Well-known approach. Discord supports it (OBS Virtual Camera). | **Invisible to Media Foundation-only apps** (Windows Camera app, UWP, newer apps). Bitness must match, so we would ship both x86 and x64 DLLs. Older technology. Several cameras means registering one CLSID per camera. |
 | **C. Kernel / AVStream driver** | A real driver (like the old vcam samples). | Visible to everything. | Needs driver signing (EV cert plus Microsoft attestation), kernel risk, and a lot of work. **Rejected.** |
 
-**Decision:** Use **Option A (MF virtual camera)** as the main approach. Keep **Option B as an optional later phase** for Windows 10 users. Our frame-transport code is designed so a DirectShow filter could reuse it.
+**Decision:** Use **Option A (MF virtual camera)** only, since Windows 11 is the target (D1). Option B is **deferred**. The frame-transport layer stays simple enough that a DirectShow filter could be added later if Windows 10 support is ever needed.
 
 Key facts about the MF virtual camera API (from Microsoft docs and samples):
 
@@ -65,8 +76,8 @@ The GUI uses a **native Windows toolkit**: real Win32 controls with Common Contr
 
 | Option | Notes |
 |---|---|
-| **`winsafe`** | Safe, idiomatic Rust wrappers over Win32 and Common Controls (windows, dialogs, `ListView`, `ComboBox`, `Edit` with password style, `UpDown`, status bar, tray via `Shell_NotifyIcon`). Actively maintained. Supports both code-built windows and dialog **resources (`.rc`)**, so forms can be laid out in a resource editor. **Chosen.** |
-| `native-windows-gui` (NWG) | Popular, higher-level Win32 wrapper with derive macros and a layout system. Easy to use, but updated rarely. **Alternative.** |
+| **`winsafe`** | Safe, idiomatic Rust wrappers over Win32 and Common Controls (windows, dialogs, `ListView`, `ComboBox`, `Edit` with password style, `UpDown`, status bar, tray via `Shell_NotifyIcon`). Actively maintained. Supports both code-built windows and dialog **resources (`.rc`)**, so forms can be laid out in a resource editor. **Chosen (D2).** |
+| `native-windows-gui` (NWG) | Popular, higher-level Win32 wrapper with derive macros and a layout system. Easy to use, but updated rarely. Not chosen. |
 | Raw `windows` crate (Win32) | The most control, the most boilerplate. Used directly only for the custom preview control and anything `winsafe` doesn't cover. |
 | WinUI 3 / WinAppSDK from Rust | Modern Fluent look, but Rust support is immature (the official `windows-app` crate was archived). Not chosen. |
 
@@ -124,7 +135,15 @@ Network discovery (optional): ONVIF **WS-Discovery** over UDP multicast `239.255
    - (b) **Fallback:** register a fixed pool of CLSIDs (for example 16 "slots") pointing to the same DLL, and map CLSID to slot to camera id.
 4. **Streaming only when watched.** The DLL only connects when a client starts streaming. The app can then start RTSP for a camera only while someone is watching it (or while the preview is open). That saves bandwidth and CPU. This is a user setting: "Always connected" or "On demand".
 5. **Output formats.** Advertise a small, predictable list: NV12 and RGB32 at **1920×1080, 1280×720, 640×480**, at 30 fps (plus 15 fps). Letterbox or scale the source to fit. Discord works best with 720p/30. Frame timing is driven by the source clock, and the last frame is repeated if the stream stalls, so clients never time out.
-6. **Camera lifetime.** Default `Session` lifetime with `CurrentUser` access: no admin needed at runtime, and cameras exist while the app (or its tray icon) is running. Option: "Keep cameras registered when the app is closed" switches to `System` lifetime and shows an "RTSP Cam is not running" image. Combine this with **start at login** so Discord sees the cameras when it starts.
+6. **Camera lifetime.** Always use `MFVirtualCameraLifetime_Session` with `MFVirtualCameraAccess_CurrentUser`. No admin is needed at runtime, and the cameras exist **only while `rtspcam.exe` is running** (D5). We don't use `System` lifetime, so quitting never leaves orphaned cameras. Optional **Start with Windows** (HKCU `Run` key) makes the cameras exist before Discord starts.
+7. **App lifecycle (window, tray, quit).**
+   - A single process, `rtspcam.exe`, contains the UI, tray icon, RTSP pipelines and IPC servers. There is **no Windows service and no helper process**.
+   - The tray icon is shown whenever the app is running. Its menu has **Open**, **Pause all / Resume all** and **Quit**.
+   - **Minimize** (title-bar button or Win+Down): if `minimize_to_tray` is **on**, the window is hidden (`SW_HIDE`), its taskbar button disappears, and a one-time balloon says "RTSP Cam is still running in the tray". If it's **off**, the window minimizes to the taskbar as normal. Double-clicking the tray icon, or choosing **Open**, restores the window and brings it to the front.
+   - **Close (X)** and **tray → Quit** both **quit the app**. Shutdown order: stop accepting IPC, call `IMFVirtualCamera::Shutdown()` for each camera (the cameras disappear from Discord and other apps), stop the RTSP pipelines, flush logs, remove the tray icon (`NIM_DELETE`), then leave the message loop and **exit the process**.
+   - **Shutdown watchdog:** if the clean shutdown hasn't finished within **3 seconds** (for example, a stuck network read), the app logs a warning and calls `std::process::exit` / `ExitProcess`, so the process always ends.
+   - **Hard kill** (Task Manager, crash): Session-lifetime cameras are tied to the process, so Windows should remove them. This is checked in Phase 0 (S0.6). As a safety net, the app removes stale cameras with its CLSID at the next start.
+   - The tray icon is re-added after Explorer restarts (handle the `TaskbarCreated` registered message).
 
 ### 3.2 Stream definition and JSON configuration
 
@@ -133,19 +152,19 @@ Network discovery (optional): ONVIF **WS-Discovery** over UDP multicast `239.255
 | Field | Control | Default / rules |
 |---|---|---|
 | Name | Edit | Required. Used as the webcam name ("<Name> – Windows Virtual Camera"). Must be unique. |
-| Protocol | ComboBox (drop-down list) | **`RTSP` (default)**. Other values: `RTSPS` (RTSP over TLS), `HTTP` (MJPEG), `HTTPS` (MJPEG). Only RTSP is required for the MVP. The others are behind the `Protocol` enum and come in later phases (see Phase 6). |
+| Protocol | ComboBox (drop-down list) | **`RTSP` (default and only entry for now, D3).** The control is there so the form layout won't change when more protocols are added (see §5 Future work). |
 | IP address / host | Edit | Required. IPv4, IPv6 or hostname. Validated before saving. |
-| Port | Edit + UpDown | Filled in automatically from the protocol (RTSP 554, RTSPS 322, HTTP 80, HTTPS 443) until the user changes it. |
+| Port | Edit + UpDown | Default **554** (taken from the protocol). The user can change it. |
 | Path | Edit | Optional, for example `/Streaming/Channels/101`. Brand presets fill this in (Phase 6). |
 | Username | Edit | Optional. |
 | Password | Edit (`ES_PASSWORD`) with a "show" toggle | Optional. Stored encrypted (see below). |
-| Transport | ComboBox | `TCP` (default) / `UDP`. Only shown for RTSP/RTSPS. |
+| Transport | ComboBox | `TCP` (default) / `UDP`. |
 | Output | ComboBox ×2 | Resolution `1280×720` (default) / `1920×1080` / `640×480`. FPS `30` (default) / `15`. |
 | Fit mode | ComboBox | `Letterbox` (default) / `Crop` / `Stretch`. |
 | On demand | CheckBox | Checked: only connect while an app is using the webcam or the preview is open. |
 | Enabled | CheckBox | Checked by default. |
 
-The final URL is `{scheme}://{host}:{port}{path}`. Credentials are **not** put in the URL. They are passed to `retina` (Basic/Digest) or the HTTP client separately, so they never show up in logs. A **Test connection** button runs a probe with the values currently in the form.
+The final URL is `rtsp://{host}:{port}{path}`. Credentials are **not** put in the URL. They are passed to `retina` (Basic/Digest auth) separately, so they never show up in logs. A **Test connection** button runs a probe with the values currently in the form.
 
 **Config file.** One JSON object at `%APPDATA%\RtspCam\config.json`, read and written with `serde` + `serde_json`:
 
@@ -153,9 +172,8 @@ The final URL is `{scheme}://{host}:{port}{path}`. Credentials are **not** put i
 {
   "version": 1,
   "settings": {
-    "start_with_windows": true,
+    "start_with_windows": false,
     "minimize_to_tray": true,
-    "keep_cameras_when_closed": false,
     "log_level": "info"
   },
   "streams": [
@@ -179,9 +197,11 @@ The final URL is `{scheme}://{host}:{port}{path}`. Credentials are **not** put i
 ```
 
 Rules:
-- `protocol` is a serde enum (`rtsp` | `rtsps` | `http` | `https`) with `#[serde(default)]` = `rtsp`. When a field is missing, the default is used, so older files still load.
+- `protocol` is a serde enum. Its only variant for now is `rtsp`, which is also the `#[serde(default)]`. An unsupported value (for example `"http"`) makes that stream show as an error in the UI ("Unsupported protocol"). The rest of the config still loads.
+- Missing fields use their defaults (`minimize_to_tray: false`, `start_with_windows: false`, `port: 554`, `transport: tcp`, etc.), so older or hand-written files still load.
 - `version` allows schema migrations later. Unknown fields are kept or ignored, never treated as errors.
 - **Passwords:** encrypted with Windows **DPAPI** (`CryptProtectData`, current-user scope) and stored as base64 with a `dpapi:` prefix. The JSON stays a single self-contained object, but only the same Windows user on the same machine can decrypt it. Export (Phase 6) leaves passwords out.
+- Settings changed in the UI (for example toggling **Minimize to tray**) take effect immediately and are saved straight away.
 - Writes are atomic (write `config.json.tmp`, then `ReplaceFileW` / rename) and the previous file is kept as `config.json.bak`.
 - The app reloads the config when it changes (`notify` crate), so hand edits take effect. Invalid JSON is reported in the UI and the last good config stays in use.
 
@@ -219,20 +239,23 @@ Each phase ends with something we can demo and clear exit criteria.
 - [ ] **S0.3 IPC across sessions.** From the Frame Server process, connect to a named pipe created by a normal (non-admin) user process, then push 1080p30 NV12 and measure latency and CPU. Also try the `Global\` shared memory created on the DLL side. Pick one.
 - [ ] **S0.4 RTSP + decode.** Use `retina` with a real camera and with `mediamtx` + `ffmpeg` test streams (H.264 and H.265). Decode with the MF H.264 MFT to NV12. Measure end-to-end latency.
 - [ ] **S0.5 Debugging setup.** ETW `tracing` layer (or a file logger under `C:\ProgramData\RtspCam\logs` with the right ACLs) for the DLL. Script to attach to the FrameServer / FrameServerMonitor services.
+- [ ] **S0.6 Process exit = cameras gone.** With Session lifetime, check that cameras disappear from Discord and the Camera app (a) after a clean exit and (b) after killing the process in Task Manager. Also check what a consumer that is streaming at that moment sees (it should stop cleanly, not hang). Write down any cleanup the app has to do at the next start.
+- [ ] **S0.7 winsafe check.** Build a minimal `winsafe` window with a `ListView`, a modal dialog, a tray icon with a context menu, hide-on-minimize, and a Direct2D child window painting frames posted from another thread.
 
-**Exit:** A written decision record (`documentation/02-spike-results.md`) covering IPC choice, multi-camera mechanism, decoder choice, and a confirmed Discord compatibility result. **Go/no-go for Option A.**
+**Exit:** A written decision record (`documentation/02-spike-results.md`) covering IPC choice, multi-camera mechanism, decoder choice, process-exit behavior, and a confirmed Discord compatibility result. **Go/no-go for Option A.**
 
 ### Phase 1: Workspace, foundations and CI
 - [ ] Cargo workspace per §3.3, `rust-toolchain.toml` (stable, `x86_64-pc-windows-msvc`), `clippy`/`rustfmt` config.
 - [ ] `rtspcam-core`: JSON config model per §3.2 (`%APPDATA%\RtspCam\config.json`, `serde_json`). Includes:
-  - `Protocol` enum (default `Rtsp`) with default ports and `StreamConfig::url()` builder (scheme://host:port/path, IPv6 bracketed, no credentials in the URL).
+  - `Protocol` enum (only variant `Rtsp`, which is also the default) with `default_port()` (554) and a `StreamConfig::url()` builder (`rtsp://host:port/path`, IPv6 in brackets, no credentials in the URL).
+  - `AppSettings { minimize_to_tray, start_with_windows, log_level }`.
   - Validation (unique names, valid host/IP, port range 1–65535).
   - DPAPI `Secret` type (`dpapi:` base64), serialized encrypted and redacted in `Debug`/logs.
   - Atomic save + `.bak`, schema `version` + migrations, file watching.
   - Unit tests: round-trip, defaults when fields are missing (protocol → rtsp), URL building, DPAPI round-trip.
 - [ ] Logging with `tracing` (rolling files) and a panic hook.
 - [ ] GitHub Actions on `windows-latest`: build, clippy, unit tests, artifact upload.
-- [ ] Local test environment: `tools/test-rtsp/` with **mediamtx** + ffmpeg scripts that publish test-pattern streams (H.264 720p/1080p, H.265, MJPEG, and one with auth).
+- [ ] Local test environment: `tools/test-rtsp/` with **mediamtx** + ffmpeg scripts that publish RTSP test-pattern streams (H.264 720p/1080p, H.265, MJPEG over RTSP, and one with username/password).
 
 **Exit:** `cargo build --workspace` passes in CI. Config round-trips to and from disk. Test RTSP streams are reachable.
 
@@ -269,36 +292,43 @@ Building on S0.1:
 - [ ] Format negotiation: the DLL tells the app which media type the consumer picked, and the pipeline scales to it.
 - [ ] Health and status model shared with the UI (state, fps in/out, consumer connected, last error).
 - [ ] Single-instance guard (named mutex). A second launch just brings the existing window forward.
-- [ ] Clean shutdown: stop cameras, close pipes, `IMFVirtualCamera::Shutdown`.
+- [ ] **Quit = process exit (D5)**: `CameraManager::shutdown()` implements the order in §3.1 #7 (stop IPC, `IMFVirtualCamera::Shutdown` for every camera, cancel the tokio runtime with `shutdown_timeout`, join the decode threads). A 3-second watchdog thread force-exits if shutdown hangs.
+- [ ] Startup cleanup: remove any stale virtual cameras registered with our CLSID (for example after a crash) before creating the configured ones.
 
-**Exit:** With the app running headless (config file only), 3 configured RTSP cameras show up as 3 webcams. Discord can switch between them. Unplugging a camera shows "No signal", and the picture recovers on its own when it comes back.
+**Exit:** With the app running headless (config file only), 3 configured RTSP cameras show up as 3 webcams. Discord can switch between them. Unplugging a camera shows "No signal", and the picture recovers on its own when it comes back. Quitting removes all 3 cameras and **no `rtspcam.exe` process remains** (checked in Task Manager), including while Discord is actively using a camera.
 
 ### Phase 5: Desktop UI
 Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 DPI awareness, keyboard navigation).
 
 - [ ] **Main window**:
   - Toolbar/buttons: **Add stream**, Edit, Remove, Start/Stop, Settings.
-  - `ListView` (report view) of streams: Name, Protocol, Address (`host:port`), Status (Connecting / Streaming 30 fps / Error / Idle / In use by app), Enabled checkbox.
+  - Menu: File → Settings…, Quit. Help → Open logs folder, About.
+  - `ListView` (report view) of streams: Name, Address (`rtsp://host:port/path`), Status (Connecting / Streaming 30 fps / Error / Idle / In use by app), Enabled checkbox.
   - **Preview pane**: custom child window with Direct2D rendering of the selected stream (GDI fallback), plus info text (codec, source resolution, fps, bitrate).
   - Status bar: number of active cameras, any error count.
 - [ ] **Add/Edit Stream dialog** (modal, laid out in `app.rc` or in code), with the fields from §3.2:
-  - Name, **Protocol combo (defaults to RTSP)**, **IP address/host**, Port (filled in from the protocol), Path, **Username**, **Password** (masked, with show toggle), Transport, Output resolution/FPS, Fit mode, On demand, Enabled.
-  - "Advanced: paste full URL" field that fills in protocol/host/port/path/user (the password gets moved into the password field).
+  - Name, **Protocol combo (RTSP, preselected, the only option for now)**, **IP address/host**, Port (default 554), Path, **Username**, **Password** (masked, with show toggle), Transport, Output resolution/FPS, Fit mode, On demand, Enabled.
+  - "Advanced: paste full URL" field that accepts an `rtsp://user:pass@host:port/path` URL and splits it into host/port/path/username/password. Any other scheme is rejected with a clear message.
   - Inline validation (OK stays disabled until the form is valid, with error text next to the bad field).
   - **Test connection** runs a background probe and shows a result: success (codec, resolution, snapshot thumbnail) or a friendly error (wrong credentials, unreachable host, timeout, unsupported codec).
   - OK saves to `config.json` (atomic) and `CameraManager` picks up the change right away.
 - [ ] Remove with a confirmation dialog (also removes the virtual camera).
-- [ ] Tray icon (`Shell_NotifyIconW` through `winsafe`/`windows`): Open, Pause all, Quit. Closing the window minimizes to tray (configurable).
-- [ ] Settings: start at login (HKCU `Run` key), keep cameras when closed (System lifetime), log level, "open logs folder".
+- [ ] **Tray icon** (`Shell_NotifyIconW` through `winsafe`/`windows`), shown while the app runs:
+  - Tooltip: "RTSP Cam – N cameras active".
+  - Left double-click restores the window. Right-click opens the context menu: **Open**, **Pause all / Resume all**, separator, **Quit**.
+  - **Quit** runs the full shutdown in §3.1 #7 and **ends the process**.
+  - Re-registered on `TaskbarCreated` (Explorer restart).
+- [ ] **Minimize to tray** (D6): handle `WM_SIZE` with `SIZE_MINIMIZED` (or `WM_SYSCOMMAND`/`SC_MINIMIZE`). When `settings.minimize_to_tray` is true, hide the window (`ShowWindow(SW_HIDE)`) so it leaves the taskbar and Alt-Tab. Restoring uses `ShowWindow(SW_RESTORE)` + `SetForegroundWindow`. When false, minimize normally.
+- [ ] **Close (X)** quits the app the same way tray → Quit does.
+- [ ] **Settings dialog**: ☐ **Minimize to tray** (default off), ☐ Start with Windows (HKCU `Run` key, launched with `--minimized`, which starts hidden in the tray if minimize-to-tray is on, otherwise minimized to the taskbar), log level. Changes are saved to `config.json` straight away.
 - [ ] Friendly errors: wrong credentials (401), unreachable host, unsupported codec (with an HEVC Store extension hint), Frame Server access denied (with a hint about the install path).
 - [ ] Discord tip shown after adding a camera: "Restart Discord if the camera doesn't appear in Settings → Voice & Video."
 
-**Exit:** A non-technical user can add a stream by entering just an IP address, username and password (protocol stays on the RTSP default), test it, rename it, remove it, and use it in Discord. Everything is saved to `config.json` and survives a restart.
+**Exit:** A non-technical user can add a stream by entering just an IP address, username and password (protocol stays on the RTSP default), test it, rename it, remove it, and use it in Discord. Everything is saved to `config.json` and survives a restart. With **Minimize to tray** on, minimizing hides the window to the tray, and it can be restored from there. **Tray → Quit** and **Close (X)** both end the process, and the cameras disappear from Discord.
 
 ### Phase 6: Discovery and convenience
 - [ ] ONVIF WS-Discovery scan ("Find cameras on network"), then a credentials prompt, then `GetProfiles`/`GetStreamUri` to fill in the RTSP URL (main or sub stream).
 - [ ] URL templates for common brands (Hikvision, Dahua, Reolink, Amcrest, Tapo, UniFi Protect) as a fallback when ONVIF isn't available.
-- [ ] Additional protocols behind the existing `Protocol` selector: **RTSPS** (RTSP over TLS: check `retina` support, otherwise TLS-wrapped transport or the `ffmpeg-next` fallback) and **HTTP/HTTPS MJPEG** (`reqwest` multipart stream into the MF MJPEG decoder).
 - [ ] Import/export config JSON (passwords left out).
 - [ ] Per-camera extras: rotate/flip, crop region, text overlay (name/time), "freeze last frame vs. show No signal" on disconnect.
 
@@ -309,10 +339,10 @@ Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 
   - Installs to `C:\Program Files\RtspCam\` (readable by the Frame Server services).
   - Registers the media source CLSID(s) in HKLM (registry table, not `regsvr32`, so repair and uninstall are clean).
   - Optional "Start with Windows".
-  - Uninstall: custom action `rtspcam.exe --remove-all-cameras`, then unregister the CLSID and delete files. Optionally keep the user config.
+  - Uninstall: close any running `rtspcam.exe` (Restart Manager / close request, which triggers the normal quit), run `rtspcam.exe --remove-all-cameras` as a safety net, then unregister the CLSID and delete files. Optionally keep the user config.
 - [ ] Code-sign the exe, DLL and MSI (avoids SmartScreen and Mark-of-the-Web trouble). Embed version info resources (`winres`/`embed-resource`) and an app manifest (DPI awareness, `asInvoker`).
 - [ ] Release build profile: LTO, `panic = "unwind"` in the DLL (needed for `catch_unwind`), `+crt-static`.
-- [ ] Check at startup: OS build ≥ 22000. Otherwise show a clear message (or use the Phase 9 fallback).
+- [ ] Check OS build ≥ 22000 in the installer (launch condition) and in the app at startup. On older Windows, show "RTSP Cam requires Windows 11" and exit.
 - [ ] Release pipeline in CI that produces a signed MSI on tag.
 
 **Exit:** Clean install, then add a camera, use it in Discord, reboot (the camera comes back if autostart is on), uninstall. Tested on a fresh Windows 11 VM with no leftover registry entries, files or cameras.
@@ -325,19 +355,22 @@ Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 
 - [ ] Fuzz the IPC frame parser and the config loader. Check sizes and bounds on every frame the DLL receives.
 - [ ] Crash reporting (minidumps for the app; ETW for the DLL).
 
-### Phase 9 (optional): Windows 10 support via DirectShow
-- [ ] A second DLL `rtspcam-dshow` (x64 + x86) implementing a DirectShow push source filter (as in `softcam` / OBS-virtualcam). It reads from the same IPC frame source through a shared-memory ring, because it runs inside each client app's process.
-- [ ] One CLSID / filter registration per camera slot. Note that it won't show up for Media Foundation-only apps.
-- [ ] The installer chooses MF or DirectShow based on OS build.
+---
+
+## 5. Future work (not scheduled)
+
+- **More protocols** behind the existing `Protocol` selector and JSON field: RTSPS (RTSP over TLS: check `retina` support, otherwise use the `ffmpeg-next` fallback) and HTTP/HTTPS MJPEG (`reqwest` multipart stream into the MF MJPEG decoder). Possibly RTMP/SRT.
+- **Windows 10 support** with a DirectShow source filter DLL (x64 + x86, as in `softcam` / OBS-virtualcam) reading frames through a shared-memory ring. Not visible to Media Foundation-only apps.
+- Audio from the stream as a virtual microphone.
 
 ---
 
-## 5. Risks and mitigations
+## 6. Risks and mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Implementing a full MF media source in Rust via `windows-rs` is new ground (few or no public Rust examples) | High | Phase 0 spike. Port closely from VCamSample / Microsoft sample / VCamNetSample (the C# port shows non-C++ implementations work). Keep a C++ fallback DLL in mind if Rust COM gets stuck. |
-| Discord (or Teams) doesn't fully accept MF virtual cameras (for example, the remote side sees black, as VCamSample reports for Teams) | High | Check early in S0.1, including the remote view. Test all advertised media types. Phase 9 DirectShow fallback. |
+| Discord (or Teams) doesn't fully accept MF virtual cameras (for example, the remote side sees black, as VCamSample reports for Teams) | High | Check early in S0.1, including the remote view. Test all advertised media types. If it can't be fixed, the DirectShow approach (§5) becomes the fallback. |
 | Telling cameras apart inside a single CLSID | Medium | CLSID slot pool fallback (S0.2). |
 | Cross-session IPC permissions (Frame Server as LocalService ↔ user app) | Medium | Named pipe with an explicit DACL. DLL-created `Global\` shared memory as the alternative (S0.3). |
 | A panic or crash in the DLL takes down Frame Server for every camera on the system | High | `catch_unwind` everywhere, no heavy dependencies in the DLL, fuzzing, fixed-size validated frames. |
@@ -345,20 +378,20 @@ Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 
 | Camera quirks (bad SDP, missing SPS/PPS, odd timestamps) | Medium | `retina` already works around many. Fall back to `ffmpeg-next` for problem cameras if needed. |
 | Native Win32 UI takes more code than immediate-mode toolkits (layout, DPI, custom preview control) | Medium | `winsafe` + dialog resources for layout. Keep the UI small (one main window plus one dialog). Isolate the Direct2D preview in its own module. |
 | Passwords in the JSON config | Medium | DPAPI encryption per user, redacted in logs, never put into URLs, left out of exports. |
-| Apps only list cameras at startup | Low | Autostart plus System-lifetime option, and a UI hint. |
-| Windows 11 only | Medium | Clear OS check. Phase 9 for Windows 10. |
+| Apps only list cameras at startup. Because cameras only exist while the app runs (D5), starting the app after Discord means Discord must be restarted | Low | "Start with Windows" setting (start hidden in the tray). UI hint after adding a camera. |
+| The process doesn't exit on Quit (stuck network I/O, a thread that won't join, COM calls blocking) | Medium | Fixed shutdown order, tokio `shutdown_timeout`, 3-second watchdog that force-exits, checked in Phase 4/5 exit criteria. |
+| Cameras left behind after a crash or hard kill | Low | Session lifetime (checked in S0.6) plus startup cleanup of stale cameras with our CLSID. |
+| Windows 11 only | Low (accepted, D1) | OS check in the installer and the app. Windows 10 is listed in Future work. |
 
-## 6. Open questions for the team
+## 7. Open questions for the team
 
-1. Is **Windows 11 only** acceptable for v1, or is Windows 10 a must (which would move Phase 9 earlier)?
-2. Expected number of cameras at once and typical resolutions/codecs (H.264 vs. H.265)? This affects the GPU-path priority.
-3. Should cameras stay visible when the app is closed (System lifetime + autostart) or only while it runs?
-4. Native toolkit: `winsafe` (recommended) or `native-windows-gui`? Are dialogs in `.rc` resources (visual editor) preferred over layout in code?
-5. Which extra protocols besides RTSP matter most (RTSPS, HTTP-MJPEG, others such as RTMP/SRT)?
-6. Distribution: internal use only, or public release (code-signing certificate, auto-update)?
-7. Is audio from the RTSP stream (virtual microphone) wanted in a later version?
+1. Expected number of cameras at once and typical resolutions/codecs (H.264 vs. H.265)? This affects the GPU-path priority.
+2. Should the **Close (X)** button also go to the tray when "Minimize to tray" is on? The current plan is that X always quits (matching D5), and only minimize goes to the tray.
+3. Are dialogs in `.rc` resources (visual editor) preferred over building the layout in code with `winsafe`?
+4. Distribution: internal use only, or public release (code-signing certificate, auto-update)?
+5. Is audio from the RTSP stream (virtual microphone) wanted in a later version?
 
-## 7. Rough effort estimate (one experienced Rust/Windows developer)
+## 8. Rough effort estimate (one experienced Rust/Windows developer)
 
 | Phase | Estimate |
 |---|---|
@@ -371,6 +404,5 @@ Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 
 | 6 Discovery | 1 week |
 | 7 Packaging | 1 week |
 | 8 Hardening | 2 weeks |
-| 9 DirectShow (optional) | 2 weeks |
 
 **MVP (Phases 0–5 + a minimal Phase 7): about 9–11 weeks.**
