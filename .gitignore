@@ -1,0 +1,30 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local config / logs created while testing
+*.log
+/logs/
+config.json.tmp
+config.json.bak
+
+# Test RTSP environment (downloaded binaries, recordings)
+/tools/test-rtsp/bin/
+/tools/test-rtsp/recordings/
+
+# Installer output
+/installer/out/
+*.msi
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local tool overrides
+mise.local.toml
+.env

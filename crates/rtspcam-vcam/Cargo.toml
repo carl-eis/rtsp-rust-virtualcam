@@ -1,0 +1,21 @@
+[package]
+name = "rtspcam-vcam"
+description = "Media Foundation custom media source (COM DLL) loaded by the Windows Frame Server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "rtspcam_vcam"
+crate-type = ["cdylib"]
+
+[dependencies]
+# No default features: the DLL runs inside a Windows service and must stay small
+# (no file watcher, no tracing subscriber, no tokio).
+rtspcam-core.workspace = true
+rtspcam-ipc.workspace = true
+
+[lints]
+workspace = true

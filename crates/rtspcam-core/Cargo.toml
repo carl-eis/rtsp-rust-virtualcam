@@ -1,0 +1,41 @@
+[package]
+name = "rtspcam-core"
+description = "Shared config model, DPAPI secrets, constants and errors for RTSP Cam"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["watch", "logging"]
+# Reload config.json when it changes on disk. Pulls in `notify`.
+watch = ["dep:notify"]
+# `tracing` subscriber with rolling log files and a panic hook.
+logging = ["dep:tracing-subscriber", "dep:tracing-appender"]
+
+[dependencies]
+base64.workspace = true
+directories.workspace = true
+notify = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-appender = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "rtspcam-app"
+description = "RTSP Cam desktop app: turns RTSP streams into Windows virtual webcams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rtspcam"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+rtspcam-core = { workspace = true, default-features = true }
+tracing.workspace = true
+
+[lints]
+workspace = true

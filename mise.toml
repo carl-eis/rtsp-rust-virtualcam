@@ -1,0 +1,30 @@
+# Developer tasks. Run with `mise run <task>` (or `mise tasks` to list them).
+# The Rust toolchain itself is pinned by rust-toolchain.toml.
+
+[tasks.fmt]
+description = "Format all crates"
+run = "cargo fmt --all"
+
+[tasks.lint]
+description = "Check formatting and run clippy like CI does"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+]
+
+[tasks.test]
+description = "Run all unit tests"
+run = "cargo test --workspace --locked"
+
+[tasks.ci]
+description = "Everything CI runs"
+depends = ["lint", "test"]
+run = "cargo build --workspace --release --locked"
+
+[tasks.rtsp]
+description = "Start the local mediamtx + ffmpeg test streams"
+run = "pwsh -NoProfile -File tools/test-rtsp/start.ps1"
+
+[tasks.rtsp-probe]
+description = "Check that every test stream is reachable"
+run = "pwsh -NoProfile -File tools/test-rtsp/probe.ps1"
