@@ -1247,8 +1247,11 @@ dependencies = [
  "anyhow",
  "clap",
  "rtspcam-core",
+ "rtspcam-pipeline",
  "serde_json",
+ "tokio",
  "tracing",
+ "windows",
 ]
 
 [[package]]
@@ -1295,6 +1298,7 @@ dependencies = [
  "url",
  "windows",
  "windows-core",
+ "zeroize",
 ]
 
 [[package]]

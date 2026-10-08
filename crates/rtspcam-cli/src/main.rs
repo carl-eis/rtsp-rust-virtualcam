@@ -1,8 +1,13 @@
 //! `rtspcam-cli`: developer tool.
 //!
-//! Phase 1 has the config commands. Later phases add `probe`, `view` and `vcam` commands.
+//! - `config`: inspect and edit the config file.
+//! - `probe`, `view`: connect to RTSP streams and decode them without the app.
+//!
+//! Phase 3 adds `vcam` commands.
 
 #![allow(clippy::print_stdout)]
+
+mod rtsp;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -34,6 +39,10 @@ enum Command {
     /// Inspect or edit the config file.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Connect to a stream, show what it offers and decode one picture.
+    Probe(rtsp::ProbeArgs),
+    /// Run streams through the full pipeline and print their status every second.
+    View(rtsp::ViewArgs),
 }
 
 #[derive(Subcommand)]
@@ -94,6 +103,8 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
     match cli.command {
         Command::Config(cmd) => config_command(&store, cmd),
+        Command::Probe(args) => rtsp::probe(&store, args),
+        Command::View(args) => rtsp::view(&store, args),
     }
 }
 
