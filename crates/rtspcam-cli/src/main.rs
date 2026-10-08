@@ -3,11 +3,12 @@
 //! - `config`: inspect and edit the config file.
 //! - `probe`, `view`: connect to RTSP streams and decode them without the app.
 //!
-//! Phase 3 adds `vcam` commands.
+//! - `vcam`: register the media source DLL, create and list virtual cameras, test the DLL.
 
 #![allow(clippy::print_stdout)]
 
 mod rtsp;
+mod vcam;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -43,6 +44,9 @@ enum Command {
     Probe(rtsp::ProbeArgs),
     /// Run streams through the full pipeline and print their status every second.
     View(rtsp::ViewArgs),
+    /// Virtual cameras: register the DLL, create test cameras, list them.
+    #[command(subcommand)]
+    Vcam(vcam::VcamCommand),
 }
 
 #[derive(Subcommand)]
@@ -105,6 +109,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config(cmd) => config_command(&store, cmd),
         Command::Probe(args) => rtsp::probe(&store, args),
         Command::View(args) => rtsp::view(&store, args),
+        Command::Vcam(cmd) => vcam::run(&store, cmd),
     }
 }
 

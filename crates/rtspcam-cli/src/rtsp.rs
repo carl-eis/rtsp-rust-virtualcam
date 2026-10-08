@@ -316,7 +316,7 @@ fn file_safe(name: &str) -> String {
 }
 
 /// Writes a 32-bit top-down BMP.
-fn save_bmp(path: &Path, frame: &Frame) -> anyhow::Result<()> {
+pub(crate) fn save_bmp(path: &Path, frame: &Frame) -> anyhow::Result<()> {
     let mut bgra = Vec::new();
     nv12_to_bgra(frame, Matrix::for_height(frame.height()), &mut bgra);
     let (w, h) = (frame.width(), frame.height());
