@@ -8,13 +8,42 @@ publish.workspace = true
 
 [lib]
 name = "rtspcam_vcam"
-crate-type = ["cdylib"]
+# rlib too, so tests can create the media source in-process without registering the DLL.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # No default features: the DLL runs inside a Windows service and must stay small
 # (no file watcher, no tracing subscriber, no tokio).
 rtspcam-core.workspace = true
 rtspcam-ipc.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Foundation",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+windows-core.workspace = true
+
+[dev-dependencies]
+rtspcam-ipc = { workspace = true, features = ["server"] }
+tokio.workspace = true
 
 [lints]
 workspace = true

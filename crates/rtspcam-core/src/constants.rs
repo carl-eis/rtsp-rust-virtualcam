@@ -21,6 +21,9 @@ pub const VCAM_SOURCE_CLSID: Uuid = uuid::uuid!("d533721f-03a1-4d9e-b562-31e82d1
 pub const CAMERA_ID_PROPERTY_FMTID: Uuid = uuid::uuid!("b6323007-9486-457a-b4c1-4fc5ce9d80d3");
 /// `pid` of the camera-id device property. Values below 2 are reserved by Windows.
 pub const CAMERA_ID_PROPERTY_PID: u32 = 2;
+/// `pid` of a second property in the same set: the stream's configured output as
+/// `"<width>x<height>@<fps>"`, so the camera can list that format first.
+pub const CAMERA_FORMAT_PROPERTY_PID: u32 = 3;
 
 /// Prefix of the per-camera named pipes served by the app (see [`frame_pipe_name`]).
 pub const PIPE_PREFIX: &str = r"\\.\pipe\rtspcam\";

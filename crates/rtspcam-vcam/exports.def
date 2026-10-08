@@ -1,0 +1,7 @@
+; COM entry points are exported PRIVATE: callers use GetProcAddress, never an import library.
+LIBRARY rtspcam_vcam
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE
+    DllRegisterServer PRIVATE
+    DllUnregisterServer PRIVATE
