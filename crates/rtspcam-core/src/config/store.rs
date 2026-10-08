@@ -27,7 +27,10 @@ impl ConfigStore {
     }
 
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), last_seen: Arc::default() }
+        Self {
+            path: path.into(),
+            last_seen: Arc::default(),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -58,7 +61,11 @@ impl ConfigStore {
         self.remember(&bytes);
         let (config, from_version) = parse(&self.path, &bytes)?;
         if from_version < CURRENT_VERSION {
-            tracing::info!(from_version, to_version = CURRENT_VERSION, "migrated config");
+            tracing::info!(
+                from_version,
+                to_version = CURRENT_VERSION,
+                "migrated config"
+            );
             self.save(&config)?;
         }
         Ok(config)
@@ -85,12 +92,18 @@ impl ConfigStore {
     }
 
     fn remember(&self, bytes: &[u8]) {
-        *self.last_seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(bytes.to_vec());
+        *self
+            .last_seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(bytes.to_vec());
     }
 
     /// Records `bytes` as seen and returns `true` if they differ from the last content seen.
     pub(super) fn remember_if_changed(&self, bytes: &[u8]) -> bool {
-        let mut last = self.last_seen.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut last = self
+            .last_seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if last.as_deref() == Some(bytes) {
             return false;
         }
@@ -101,7 +114,10 @@ impl ConfigStore {
 
 /// Parses and migrates config bytes; returns the config and the version found in the file.
 pub(super) fn parse(path: &Path, bytes: &[u8]) -> Result<(Config, u64), ConfigError> {
-    let parse_err = |source| ConfigError::Parse { path: path.to_owned(), source };
+    let parse_err = |source| ConfigError::Parse {
+        path: path.to_owned(),
+        source,
+    };
     let mut doc: serde_json::Value = serde_json::from_slice(bytes).map_err(parse_err)?;
     let from_version = migrate(&mut doc)?;
     let config = serde_json::from_value(doc).map_err(parse_err)?;
@@ -129,7 +145,9 @@ fn replace(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
     {
         match replace_file(tmp, target, backup) {
             Ok(()) => return Ok(()),
-            Err(e) => tracing::debug!(error = %e, "ReplaceFileW failed, falling back to copy + rename"),
+            Err(e) => {
+                tracing::debug!(error = %e, "ReplaceFileW failed, falling back to copy + rename")
+            }
         }
     }
     fs::copy(target, backup)?;
@@ -184,7 +202,9 @@ mod tests {
         let (_dir, store) = store();
         let mut config = Config::default();
         config.settings.minimize_to_tray = true;
-        config.streams.push(StreamConfig::new("Front Door", "192.168.1.50"));
+        config
+            .streams
+            .push(StreamConfig::new("Front Door", "192.168.1.50"));
         store.save(&config).unwrap();
         assert_eq!(store.load().unwrap(), config);
         assert!(!store.temp_path().exists());
@@ -199,12 +219,14 @@ mod tests {
 
         config.settings.start_with_windows = true;
         store.save(&config).unwrap();
-        let backup: Config = serde_json::from_slice(&fs::read(store.backup_path()).unwrap()).unwrap();
+        let backup: Config =
+            serde_json::from_slice(&fs::read(store.backup_path()).unwrap()).unwrap();
         assert!(!backup.settings.start_with_windows);
 
         config.settings.minimize_to_tray = true;
         store.save(&config).unwrap();
-        let backup: Config = serde_json::from_slice(&fs::read(store.backup_path()).unwrap()).unwrap();
+        let backup: Config =
+            serde_json::from_slice(&fs::read(store.backup_path()).unwrap()).unwrap();
         assert!(backup.settings.start_with_windows && !backup.settings.minimize_to_tray);
         assert_eq!(store.load().unwrap(), config);
     }

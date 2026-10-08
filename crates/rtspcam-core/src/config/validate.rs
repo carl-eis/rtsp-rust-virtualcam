@@ -36,7 +36,9 @@ pub enum Problem {
     InvalidPort,
     #[error("path must not contain spaces or control characters")]
     InvalidPath,
-    #[error("the saved password can't be decrypted (was the config copied from another user or PC?); enter it again")]
+    #[error(
+        "the saved password can't be decrypted (was the config copied from another user or PC?); enter it again"
+    )]
     PasswordLocked,
     #[error("unsupported output format {width}x{height} @ {fps} fps")]
     UnsupportedOutput { width: u32, height: u32, fps: u32 },
@@ -82,7 +84,10 @@ impl StreamConfig {
             push(Field::Name, Problem::NameRequired);
         }
         if !self.protocol.is_supported() {
-            push(Field::Protocol, Problem::UnsupportedProtocol(self.protocol.scheme().to_owned()));
+            push(
+                Field::Protocol,
+                Problem::UnsupportedProtocol(self.protocol.scheme().to_owned()),
+            );
         }
         let host = self.host.trim();
         if host.is_empty() {
@@ -93,7 +98,12 @@ impl StreamConfig {
         if self.port == 0 {
             push(Field::Port, Problem::InvalidPort);
         }
-        if self.path.trim().chars().any(|c| c.is_whitespace() || c.is_control()) {
+        if self
+            .path
+            .trim()
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+        {
             push(Field::Path, Problem::InvalidPath);
         }
         if self.password.as_ref().is_some_and(|p| p.expose().is_none()) {
@@ -101,14 +111,21 @@ impl StreamConfig {
         }
         if !self.output.is_supported() {
             let OutputFormat { width, height, fps } = self.output;
-            push(Field::Output, Problem::UnsupportedOutput { width, height, fps });
+            push(
+                Field::Output,
+                Problem::UnsupportedOutput { width, height, fps },
+            );
         }
         issues
     }
 }
 
 fn issue(stream: &StreamConfig, field: Field, problem: Problem) -> ValidationIssue {
-    ValidationIssue { stream: stream.id, field, problem }
+    ValidationIssue {
+        stream: stream.id,
+        field,
+        problem,
+    }
 }
 
 /// IPv4, IPv6 (optionally bracketed and/or with a `%zone`), or an RFC 1123 host name.
@@ -116,10 +133,15 @@ pub(crate) fn is_valid_host(host: &str) -> bool {
     if host.parse::<IpAddr>().is_ok() {
         return true;
     }
-    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     if let Some((addr, zone)) = bare.split_once('%') {
         return !zone.is_empty()
-            && zone.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+            && zone
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
             && addr.parse::<Ipv6Addr>().is_ok();
     }
     if bare.parse::<Ipv6Addr>().is_ok() {
@@ -141,7 +163,9 @@ fn is_valid_hostname(host: &str) -> bool {
             && !l.ends_with('-')
     };
     // A numeric last label means a mistyped IPv4 address such as "192.168.1.300".
-    let last_is_numeric = labels.last().is_some_and(|l| l.chars().all(|c| c.is_ascii_digit()));
+    let last_is_numeric = labels
+        .last()
+        .is_some_and(|l| l.chars().all(|c| c.is_ascii_digit()));
     labels.iter().all(label_ok) && !last_is_numeric
 }
 
@@ -214,8 +238,12 @@ mod tests {
     #[test]
     fn names_must_be_unique_ignoring_case_and_spaces() {
         let mut config = Config::default();
-        config.streams.push(StreamConfig::new("Front Door", "10.0.0.1"));
-        config.streams.push(StreamConfig::new(" front door ", "10.0.0.2"));
+        config
+            .streams
+            .push(StreamConfig::new("Front Door", "10.0.0.1"));
+        config
+            .streams
+            .push(StreamConfig::new(" front door ", "10.0.0.2"));
         let issues = config.validate();
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].field, Field::Name);
@@ -226,7 +254,10 @@ mod tests {
     fn ids_must_be_unique() {
         let mut config = Config::default();
         let a = StreamConfig::new("A", "10.0.0.1");
-        let b = StreamConfig { id: a.id, ..StreamConfig::new("B", "10.0.0.2") };
+        let b = StreamConfig {
+            id: a.id,
+            ..StreamConfig::new("B", "10.0.0.2")
+        };
         config.streams = vec![a, b];
         assert_eq!(config.validate()[0].problem, Problem::DuplicateId);
     }

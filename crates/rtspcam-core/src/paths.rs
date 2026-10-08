@@ -21,5 +21,8 @@ pub fn config_file() -> Result<PathBuf, ConfigError> {
 
 /// `%LOCALAPPDATA%\RtspCam\logs` (local, not roaming): the app's rolling log files.
 pub fn log_dir() -> Result<PathBuf, ConfigError> {
-    Ok(base_dirs()?.data_local_dir().join(APP_DIR_NAME).join("logs"))
+    Ok(base_dirs()?
+        .data_local_dir()
+        .join(APP_DIR_NAME)
+        .join("logs"))
 }

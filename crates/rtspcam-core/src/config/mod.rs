@@ -137,7 +137,11 @@ impl Default for StreamConfig {
 impl StreamConfig {
     /// A new enabled stream with default settings and a fresh id.
     pub fn new(name: impl Into<String>, host: impl Into<String>) -> Self {
-        Self { name: name.into(), host: host.into(), ..Self::default() }
+        Self {
+            name: name.into(),
+            host: host.into(),
+            ..Self::default()
+        }
     }
 
     /// The stream URL, `rtsp://host:port/path`.
@@ -171,7 +175,10 @@ impl StreamConfig {
 /// Formats a host for a URL: IPv6 literals are bracketed (`[fe80::1%25eth0]`).
 fn url_host(host: &str) -> String {
     let host = host.trim();
-    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
     let (addr, zone) = match bare.split_once('%') {
         Some((addr, zone)) => (addr, Some(zone.strip_prefix("25").unwrap_or(zone))),
         None => (bare, None),
@@ -241,7 +248,11 @@ impl OutputFormat {
 
 impl Default for OutputFormat {
     fn default() -> Self {
-        Self { width: 1280, height: 720, fps: 30 }
+        Self {
+            width: 1280,
+            height: 720,
+            fps: 30,
+        }
     }
 }
 
@@ -288,7 +299,11 @@ mod tests {
     use super::*;
 
     fn stream(host: &str, port: u16, path: &str) -> StreamConfig {
-        StreamConfig { port, path: path.into(), ..StreamConfig::new("cam", host) }
+        StreamConfig {
+            port,
+            path: path.into(),
+            ..StreamConfig::new("cam", host)
+        }
     }
 
     #[test]
@@ -297,7 +312,10 @@ mod tests {
             stream("192.168.1.50", 554, "/Streaming/Channels/101").url(),
             "rtsp://192.168.1.50:554/Streaming/Channels/101"
         );
-        assert_eq!(stream("cam.local", 8554, "live").url(), "rtsp://cam.local:8554/live");
+        assert_eq!(
+            stream("cam.local", 8554, "live").url(),
+            "rtsp://cam.local:8554/live"
+        );
         assert_eq!(stream(" cam.local ", 554, "").url(), "rtsp://cam.local:554");
     }
 
@@ -305,8 +323,14 @@ mod tests {
     fn url_ipv6_is_bracketed() {
         assert_eq!(stream("::1", 554, "/a").url(), "rtsp://[::1]:554/a");
         assert_eq!(stream("[fe80::1]", 554, "").url(), "rtsp://[fe80::1]:554");
-        assert_eq!(stream("fe80::1%eth0", 554, "").url(), "rtsp://[fe80::1%25eth0]:554");
-        assert_eq!(stream("[fe80::1%25eth0]", 554, "").url(), "rtsp://[fe80::1%25eth0]:554");
+        assert_eq!(
+            stream("fe80::1%eth0", 554, "").url(),
+            "rtsp://[fe80::1%25eth0]:554"
+        );
+        assert_eq!(
+            stream("[fe80::1%25eth0]", 554, "").url(),
+            "rtsp://[fe80::1%25eth0]:554"
+        );
     }
 
     #[test]
@@ -335,7 +359,14 @@ mod tests {
         assert_eq!(s.protocol, Protocol::Rtsp);
         assert_eq!(s.port, 554);
         assert_eq!(s.transport, Transport::Tcp);
-        assert_eq!(s.output, OutputFormat { width: 1280, height: 720, fps: 30 });
+        assert_eq!(
+            s.output,
+            OutputFormat {
+                width: 1280,
+                height: 720,
+                fps: 30
+            }
+        );
         assert_eq!(s.fit_mode, FitMode::Letterbox);
         assert!(s.enabled);
         assert!(s.password.is_none());
@@ -372,7 +403,10 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert_eq!(config.streams[0].protocol, Protocol::Unsupported("http".into()));
+        assert_eq!(
+            config.streams[0].protocol,
+            Protocol::Unsupported("http".into())
+        );
         assert_eq!(config.streams[1].protocol, Protocol::Rtsp);
         let out = serde_json::to_value(&config).unwrap();
         assert_eq!(out["streams"][0]["protocol"], "http");
@@ -389,7 +423,11 @@ mod tests {
         s.username = "admin".into();
         s.password = Some(Secret::new("hunter2"));
         s.transport = Transport::Udp;
-        s.output = OutputFormat { width: 1920, height: 1080, fps: 15 };
+        s.output = OutputFormat {
+            width: 1920,
+            height: 1080,
+            fps: 15,
+        };
         s.fit_mode = FitMode::Crop;
         s.on_demand = false;
         config.streams.push(s);

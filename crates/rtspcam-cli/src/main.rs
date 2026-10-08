@@ -80,7 +80,11 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<ExitCode> {
     let mut log_opts = LogOptions::new(paths::log_dir()?, "rtspcam-cli");
     log_opts.stderr = true;
-    log_opts.level = if cli.verbose { LogLevel::Debug } else { LogLevel::Warn };
+    log_opts.level = if cli.verbose {
+        LogLevel::Debug
+    } else {
+        LogLevel::Warn
+    };
     let _log = logging::init(&log_opts)?;
 
     let store = match cli.config {
@@ -107,17 +111,28 @@ fn config_command(store: &ConfigStore, cmd: ConfigCommand) -> anyhow::Result<Exi
             let issues = config.validate();
             for issue in &issues {
                 let name = config.stream(issue.stream).map_or("?", |s| s.name.as_str());
-                println!("{name} ({}): {:?}: {}", issue.stream, issue.field, issue.problem);
+                println!(
+                    "{name} ({}): {:?}: {}",
+                    issue.stream, issue.field, issue.problem
+                );
             }
             if !issues.is_empty() {
                 return Ok(ExitCode::FAILURE);
             }
-            println!("{}: OK ({} streams)", store.path().display(), config.streams.len());
+            println!(
+                "{}: OK ({} streams)",
+                store.path().display(),
+                config.streams.len()
+            );
         }
         ConfigCommand::AddTestStreams { host, port } => {
             let mut config = store.load()?;
             for &(name, path, secure) in TEST_STREAMS {
-                if config.streams.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+                if config
+                    .streams
+                    .iter()
+                    .any(|s| s.name.eq_ignore_ascii_case(name))
+                {
                     println!("skip  {name} (already exists)");
                     continue;
                 }

@@ -75,7 +75,10 @@ impl Secret {
             Ok(plain) => Self(Inner::Plain(plain)),
             Err(err) => {
                 tracing::warn!(error = %err, "could not decrypt a stored secret");
-                Self(Inner::Locked { stored: stored.to_owned(), reason: err.to_string() })
+                Self(Inner::Locked {
+                    stored: stored.to_owned(),
+                    reason: err.to_string(),
+                })
             }
         }
     }
@@ -144,7 +147,10 @@ mod dpapi {
     use crate::error::SecretError;
 
     fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
-        CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr().cast_mut() }
+        CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr().cast_mut(),
+        }
     }
 
     /// Copies a DPAPI output blob into a `Vec` and frees the original with `LocalFree`.
@@ -160,7 +166,10 @@ mod dpapi {
     }
 
     fn dpapi_err(op: &'static str, err: windows::core::Error) -> SecretError {
-        SecretError::Dpapi { op, source: io::Error::from_raw_os_error(err.code().0) }
+        SecretError::Dpapi {
+            op,
+            source: io::Error::from_raw_os_error(err.code().0),
+        }
     }
 
     pub(super) fn protect(plain: &[u8]) -> Result<Vec<u8>, SecretError> {

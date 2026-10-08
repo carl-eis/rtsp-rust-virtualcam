@@ -33,7 +33,10 @@ pub(crate) fn migrate(doc: &mut Value) -> Result<u64, ConfigError> {
     .max(1);
 
     if found > CURRENT_VERSION {
-        return Err(ConfigError::UnsupportedVersion { found, supported: CURRENT_VERSION });
+        return Err(ConfigError::UnsupportedVersion {
+            found,
+            supported: CURRENT_VERSION,
+        });
     }
     for (from, step) in (found..).zip(&MIGRATIONS[(found - 1) as usize..]) {
         step(obj).map_err(|reason| ConfigError::Migration { from, reason })?;
@@ -58,12 +61,18 @@ mod tests {
     #[test]
     fn newer_version_is_rejected() {
         let mut doc = json!({ "version": CURRENT_VERSION + 1 });
-        assert!(matches!(migrate(&mut doc), Err(ConfigError::UnsupportedVersion { .. })));
+        assert!(matches!(
+            migrate(&mut doc),
+            Err(ConfigError::UnsupportedVersion { .. })
+        ));
     }
 
     #[test]
     fn bad_version_is_rejected() {
         let mut doc = json!({ "version": "one" });
-        assert!(matches!(migrate(&mut doc), Err(ConfigError::Migration { .. })));
+        assert!(matches!(
+            migrate(&mut doc),
+            Err(ConfigError::Migration { .. })
+        ));
     }
 }

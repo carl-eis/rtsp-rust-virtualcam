@@ -34,7 +34,10 @@ mod tests {
 
     #[test]
     fn clsid_string_has_braces() {
-        assert_eq!(vcam_source_clsid_string(), "{D533721F-03A1-4D9E-B562-31E82D1ED87F}");
+        assert_eq!(
+            vcam_source_clsid_string(),
+            "{D533721F-03A1-4D9E-B562-31E82D1ED87F}"
+        );
     }
 
     #[test]

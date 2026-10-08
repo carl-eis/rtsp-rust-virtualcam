@@ -65,7 +65,9 @@ pub struct LogGuard {
 
 impl fmt::Debug for LogGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LogGuard").field("env_override", &self.env_override).finish_non_exhaustive()
+        f.debug_struct("LogGuard")
+            .field("env_override", &self.env_override)
+            .finish_non_exhaustive()
     }
 }
 
@@ -90,18 +92,32 @@ pub fn init(opts: &LogOptions) -> Result<LogGuard, LoggingError> {
         .filename_suffix("log")
         .max_log_files(opts.max_files)
         .build(&opts.dir)
-        .map_err(|source| LoggingError::Appender { dir: opts.dir.clone(), source })?;
+        .map_err(|source| LoggingError::Appender {
+            dir: opts.dir.clone(),
+            source,
+        })?;
     let (writer, worker) = tracing_appender::non_blocking(appender);
 
-    let env_filter = std::env::var(LOG_ENV_VAR).ok().and_then(|v| EnvFilter::try_new(v).ok());
+    let env_filter = std::env::var(LOG_ENV_VAR)
+        .ok()
+        .and_then(|v| EnvFilter::try_new(v).ok());
     let env_override = env_filter.is_some();
     let filter = env_filter.unwrap_or_else(|| EnvFilter::new(opts.level.as_str()));
     let (filter, handle) = reload::Layer::new(filter);
 
-    let file_layer = tfmt::layer().with_writer(writer).with_ansi(false).with_thread_names(true);
-    let stderr_layer = opts.stderr.then(|| tfmt::layer().with_writer(std::io::stderr));
+    let file_layer = tfmt::layer()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_thread_names(true);
+    let stderr_layer = opts
+        .stderr
+        .then(|| tfmt::layer().with_writer(std::io::stderr));
 
-    tracing_subscriber::registry().with(filter).with(file_layer).with(stderr_layer).try_init()?;
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(stderr_layer)
+        .try_init()?;
     install_panic_hook();
 
     tracing::info!(
@@ -109,7 +125,11 @@ pub fn init(opts: &LogOptions) -> Result<LogGuard, LoggingError> {
         dir = %opts.dir.display(),
         "logging started"
     );
-    Ok(LogGuard { _worker: worker, filter: handle, env_override })
+    Ok(LogGuard {
+        _worker: worker,
+        filter: handle,
+        env_override,
+    })
 }
 
 /// Logs every panic (message, location, thread and backtrace) at `error` level, then runs the

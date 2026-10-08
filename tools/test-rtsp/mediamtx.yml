@@ -1,0 +1,91 @@
+# mediamtx config for RTSP Cam development.
+#
+# Starts an RTSP server on :8554 and uses ffmpeg to publish test-pattern streams to it.
+# Start it with ./start.ps1 (or `mise run rtsp`). See README.md.
+#
+#   rtsp://127.0.0.1:8554/h264-720p    H.264 1280x720 30 fps
+#   rtsp://127.0.0.1:8554/h264-1080p   H.264 1920x1080 30 fps
+#   rtsp://127.0.0.1:8554/h265-720p    H.265 1280x720 30 fps
+#   rtsp://127.0.0.1:8554/mjpeg-720p   MJPEG 1280x720 15 fps
+#   rtsp://127.0.0.1:8554/secure       H.264 1280x720 30 fps, user "rtspcam" / password "rtspcam-test"
+
+logLevel: info
+
+# RTSP only.
+rtsp: yes
+rtspAddress: :8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+authMethod: internal
+authInternalUsers:
+  # Anyone on this machine may publish (the ffmpeg processes below).
+  - user: any
+    pass:
+    ips: ["127.0.0.1", "::1"]
+    permissions:
+      - action: publish
+  # Anyone may read the open test streams.
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+        path: h264-720p
+      - action: read
+        path: h264-1080p
+      - action: read
+        path: h265-720p
+      - action: read
+        path: mjpeg-720p
+  # The secure stream needs credentials (Basic/Digest auth).
+  - user: rtspcam
+    pass: rtspcam-test
+    ips: []
+    permissions:
+      - action: read
+        path: secure
+
+pathDefaults:
+  # Restart ffmpeg if it exits.
+  runOnInitRestart: yes
+
+paths:
+  h264-720p:
+    runOnInit: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1280x720:rate=30
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -g 30 -b:v 2M
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  h264-1080p:
+    runOnInit: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1920x1080:rate=30
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -pix_fmt yuv420p -g 30 -b:v 4M
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  h265-720p:
+    runOnInit: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1280x720:rate=30
+      -c:v libx265 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -b:v 2M
+      -x265-params log-level=error
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  # RTP/JPEG (RFC 2435) limits frames to 2040x2040, so MJPEG stays at 720p.
+  mjpeg-720p:
+    runOnInit: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1280x720:rate=15
+      -c:v mjpeg -pix_fmt yuvj420p -q:v 5
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  secure:
+    runOnInit: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i smptehdbars=size=1280x720:rate=30
+      -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -b:v 2M
+      -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH

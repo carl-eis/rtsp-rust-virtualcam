@@ -12,7 +12,10 @@ fn main() -> anyhow::Result<()> {
     let store = ConfigStore::open_default()?;
     // Load before logging starts so the configured level applies from the first line.
     let loaded = store.load();
-    let level = loaded.as_ref().map(|c| c.settings.log_level).unwrap_or_default();
+    let level = loaded
+        .as_ref()
+        .map(|c| c.settings.log_level)
+        .unwrap_or_default();
 
     let mut log_opts = LogOptions::new(paths::log_dir()?, "rtspcam");
     log_opts.level = level;

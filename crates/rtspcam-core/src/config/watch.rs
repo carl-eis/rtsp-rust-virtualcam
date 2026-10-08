@@ -8,8 +8,8 @@ use std::{fmt, fs};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::store::{ConfigStore, parse};
 use super::Config;
+use super::store::{ConfigStore, parse};
 use crate::error::ConfigError;
 
 /// Editors and our own atomic save produce bursts of events; wait this long for quiet.
@@ -45,7 +45,11 @@ impl ConfigStore {
     {
         // Watch the folder, not the file: an atomic replace swaps the file out from under a
         // file watch.
-        let dir = self.path().parent().map(PathBuf::from).unwrap_or_else(|| ".".into());
+        let dir = self
+            .path()
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ".".into());
         fs::create_dir_all(&dir).map_err(|e| ConfigError::io(&dir, e))?;
 
         let (tx, rx) = mpsc::channel();
@@ -61,7 +65,11 @@ impl ConfigStore {
             .spawn(move || run(store, rx, on_change))
             .map_err(|e| ConfigError::io(&dir, e))?;
 
-        Ok(ConfigWatcher { watcher: Some(watcher), tx, thread: Some(thread) })
+        Ok(ConfigWatcher {
+            watcher: Some(watcher),
+            tx,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -71,7 +79,10 @@ where
 {
     let file_name: Option<OsString> = store.path().file_name().map(Into::into);
     let concerns_config = |event: &notify::Event| {
-        event.paths.iter().any(|p| p.file_name().map(Into::into) == file_name)
+        event
+            .paths
+            .iter()
+            .any(|p| p.file_name().map(Into::into) == file_name)
     };
 
     loop {
@@ -132,7 +143,12 @@ mod tests {
 
     const WAIT: Duration = Duration::from_secs(5);
 
-    fn watched() -> (tempfile::TempDir, ConfigStore, ConfigWatcher, Receiver<Result<Config, ConfigError>>) {
+    fn watched() -> (
+        tempfile::TempDir,
+        ConfigStore,
+        ConfigWatcher,
+        Receiver<Result<Config, ConfigError>>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = ConfigStore::new(dir.path().join("config.json"));
         store.save(&Config::default()).unwrap();
@@ -148,7 +164,11 @@ mod tests {
     #[test]
     fn reports_external_edits() {
         let (_dir, store, _watcher, rx) = watched();
-        fs::write(store.path(), r#"{ "settings": { "minimize_to_tray": true } }"#).unwrap();
+        fs::write(
+            store.path(),
+            r#"{ "settings": { "minimize_to_tray": true } }"#,
+        )
+        .unwrap();
         let config = rx.recv_timeout(WAIT).expect("no reload").unwrap();
         assert!(config.settings.minimize_to_tray);
     }
@@ -157,7 +177,10 @@ mod tests {
     fn reports_invalid_json_as_error() {
         let (_dir, store, _watcher, rx) = watched();
         fs::write(store.path(), "{ broken").unwrap();
-        assert!(matches!(rx.recv_timeout(WAIT).expect("no reload"), Err(ConfigError::Parse { .. })));
+        assert!(matches!(
+            rx.recv_timeout(WAIT).expect("no reload"),
+            Err(ConfigError::Parse { .. })
+        ));
     }
 
     #[test]

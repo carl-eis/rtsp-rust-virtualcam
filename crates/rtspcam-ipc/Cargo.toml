@@ -4,7 +4,6 @@ description = "Frame and control protocol between the RTSP Cam app and the virtu
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
 publish.workspace = true
 
 [dependencies]
