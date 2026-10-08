@@ -17,6 +17,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 url.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
