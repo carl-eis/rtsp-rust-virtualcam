@@ -14,6 +14,14 @@ pub const CONFIG_FILE_NAME: &str = "config.json";
 /// CLSID of the Media Foundation custom media source in `rtspcam_vcam.dll`.
 pub const VCAM_SOURCE_CLSID: Uuid = uuid::uuid!("d533721f-03a1-4d9e-b562-31e82d1ed87f");
 
+/// Device-interface property (DEVPROPKEY `fmtid`, `pid` = [`CAMERA_ID_PROPERTY_PID`]) that the
+/// app attaches to each virtual camera with `IMFVirtualCamera::AddProperty`. Its value is the
+/// stream id as a string. The media source reads it back from its device interface to know
+/// which stream (and pipe) it belongs to.
+pub const CAMERA_ID_PROPERTY_FMTID: Uuid = uuid::uuid!("b6323007-9486-457a-b4c1-4fc5ce9d80d3");
+/// `pid` of the camera-id device property. Values below 2 are reserved by Windows.
+pub const CAMERA_ID_PROPERTY_PID: u32 = 2;
+
 /// Prefix of the per-camera named pipes served by the app (see [`frame_pipe_name`]).
 pub const PIPE_PREFIX: &str = r"\\.\pipe\rtspcam\";
 
