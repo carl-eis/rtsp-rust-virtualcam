@@ -1,4 +1,6 @@
+use std::convert::Infallible;
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -59,13 +61,22 @@ impl Serialize for Protocol {
     }
 }
 
+impl FromStr for Protocol {
+    type Err = Infallible;
+
+    /// Case-insensitive. Unknown values become [`Protocol::Unsupported`] with the original text.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(match value.trim().to_ascii_lowercase().as_str() {
+            "rtsp" => Self::Rtsp,
+            _ => Self::Unsupported(value.to_owned()),
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for Protocol {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        Ok(match value.trim().to_ascii_lowercase().as_str() {
-            "rtsp" => Self::Rtsp,
-            _ => Self::Unsupported(value),
-        })
+        Ok(value.parse().unwrap_or_else(|never| match never {}))
     }
 }
 

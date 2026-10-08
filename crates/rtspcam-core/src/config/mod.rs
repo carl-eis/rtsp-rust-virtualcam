@@ -7,6 +7,7 @@
 mod migrate;
 mod protocol;
 mod store;
+mod url;
 mod validate;
 #[cfg(feature = "watch")]
 mod watch;
@@ -20,6 +21,7 @@ use uuid::Uuid;
 pub use migrate::CURRENT_VERSION;
 pub use protocol::Protocol;
 pub use store::ConfigStore;
+pub use url::{StreamUrl, UrlError, parse_stream_url};
 pub use validate::{Field, Problem, ValidationIssue};
 #[cfg(feature = "watch")]
 pub use watch::ConfigWatcher;

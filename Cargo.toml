@@ -18,18 +18,27 @@ rtspcam-vcam-mgr = { path = "crates/rtspcam-vcam-mgr" }
 # External crates
 anyhow = "1"
 base64 = "0.22"
+bytes = "1"
 clap = { version = "4.5", features = ["derive"] }
 directories = "6"
+futures = "0.3"
 notify = "8"
+openh264 = "0.9"
+percent-encoding = "2"
+rand = "0.9"
+retina = "0.4.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 windows = "0.62"
+windows-core = "0.62"
 zeroize = "1"
 
 [workspace.lints.rust]
