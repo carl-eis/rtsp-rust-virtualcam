@@ -75,12 +75,13 @@ paths:
       -x265-params log-level=error
       -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
 
-  # RTP/JPEG (RFC 2435) limits frames to 2040x2040, so MJPEG stays at 720p.
+  # RTP/JPEG (RFC 2435) limits frames to 2040x2040, so MJPEG stays at 720p. It also needs the
+  # standard Huffman tables (`-huffman default`); ffmpeg optimizes them by default.
   mjpeg-720p:
     runOnInit: >-
       ffmpeg -hide_banner -loglevel error -re
       -f lavfi -i testsrc2=size=1280x720:rate=15
-      -c:v mjpeg -pix_fmt yuvj420p -q:v 5
+      -c:v mjpeg -huffman default -pix_fmt yuvj420p -q:v 5
       -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
 
   secure:

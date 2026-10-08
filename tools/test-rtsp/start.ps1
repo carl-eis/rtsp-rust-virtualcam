@@ -12,20 +12,26 @@
 .PARAMETER Docker
     Run mediamtx and ffmpeg in a container instead of natively.
 
+.PARAMETER Detach
+    With -Docker: run the container in the background. Stop it with `docker stop rtspcam-test-rtsp`.
+
 .EXAMPLE
     ./start.ps1
     ./start.ps1 -Docker
+    ./start.ps1 -Docker -Detach
 #>
 [CmdletBinding()]
 param(
-    [switch]$Docker
+    [switch]$Docker,
+    [switch]$Detach
 )
 
 $ErrorActionPreference = 'Stop'
 $config = Join-Path $PSScriptRoot 'mediamtx.yml'
 
 if ($Docker) {
-    docker run --rm -it --name rtspcam-test-rtsp -p 8554:8554 `
+    $mode = if ($Detach) { '-d' } else { '-it' }
+    docker run --rm $mode --name rtspcam-test-rtsp -p 8554:8554 `
         -v "${config}:/mediamtx.yml:ro" bluenviron/mediamtx:latest-ffmpeg
     exit $LASTEXITCODE
 }

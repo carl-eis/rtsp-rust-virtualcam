@@ -25,13 +25,15 @@ scoop install ffmpeg mediamtx   # or download them yourself
 With Docker Desktop instead (image `bluenviron/mediamtx:latest-ffmpeg`):
 
 ```powershell
-./tools/test-rtsp/start.ps1 -Docker
+./tools/test-rtsp/start.ps1 -Docker           # foreground, Ctrl+C to stop
+./tools/test-rtsp/start.ps1 -Docker -Detach   # background; stop with: docker stop rtspcam-test-rtsp
 ```
 
 ## Check it
 
 ```powershell
-./tools/test-rtsp/probe.ps1     # or: mise run rtsp-probe
+./tools/test-rtsp/probe.ps1           # or: mise run rtsp-probe
+./tools/test-rtsp/probe.ps1 -Docker   # uses the ffprobe inside the test container
 ```
 
 This runs `ffprobe` against every stream, checks the codec, and checks that `secure` refuses
