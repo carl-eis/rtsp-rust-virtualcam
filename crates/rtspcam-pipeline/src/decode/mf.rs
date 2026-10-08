@@ -150,9 +150,7 @@ impl MfDecoder {
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             input.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
             input.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-            // Only MJPEG gets the size up front. The H.264 decoder fails every output copy
-            // ("CopyDecodedFrame failed") when it is set, and learns it from the SPS anyway.
-            if let Some((w, h)) = size.filter(|_| codec == VideoCodec::Mjpeg) {
+            if let Some((w, h)) = size {
                 input.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(w) << 32) | u64::from(h))?;
             }
             transform.SetInputType(0, &input, 0).map_err(|e| {
@@ -251,7 +249,13 @@ impl MfDecoder {
             let provided = if self.mft_provides_samples {
                 None
             } else {
-                self.out_sample.as_ref().map(|(s, _)| s.clone())
+                self.out_sample.as_ref().map(|(s, _)| {
+                    // The H.264 MFT fails with "CopyDecodedFrame failed" (E_FAIL) if the reused
+                    // buffer still holds the previous picture's length.
+                    // SAFETY: our own sample, created with exactly one buffer.
+                    let _ = unsafe { s.GetBufferByIndex(0).and_then(|b| b.SetCurrentLength(0)) };
+                    s.clone()
+                })
             };
             let mut buffer = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
@@ -412,7 +416,9 @@ fn read_format(t: &IMFMediaType) -> windows_core::Result<OutputFormat> {
     // `area`, which is plain old data.
     unsafe {
         let subtype = t.GetGUID(&MF_MT_SUBTYPE)?;
-        let size = t.GetUINT64(&MF_MT_FRAME_SIZE)?;
+        // Some decoders (HEVC) only know the size once the stream starts; until then the
+        // picture size is 0x0, no pictures are produced, and a stream change follows.
+        let size = t.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0);
         let coded = ((size >> 32) as u32, size as u32);
         // Stored as UINT32 but holds a signed value (negative = bottom-up, not used here).
         let stride = t
