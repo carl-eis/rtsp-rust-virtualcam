@@ -8,9 +8,11 @@ Windows Camera app.
 It uses the Windows 11 Media Foundation virtual camera API (`MFCreateVirtualCamera`), so no
 kernel driver is needed. Cameras exist only while the app is running.
 
-> **Status:** early development. Phase 1 (workspace, config, logging, CI, test environment)
-> is in place. There is no virtual camera or UI yet. See the
-> [implementation plan](documentation/01-plan.md).
+> **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
+> virtual camera media source (Phase 3) is built and tested in-process but not yet verified in
+> camera apps. The desktop app and UI (Phases 4–5) don't exist yet. See the
+> [implementation plan](documentation/01-plan.md) and the
+> [progress record](documentation/03-progress-phases-2-3.md).
 
 ## Requirements
 
@@ -47,13 +49,14 @@ Or with mise: `mise run test`, `mise run lint`, `mise run ci`.
 crates/
   rtspcam-core/       config model (JSON), Protocol + URL builder, DPAPI secrets, validation,
                       atomic save, migrations, file watching, logging, shared constants
-  rtspcam-ipc/        app ↔ virtual camera frame protocol          (Phase 3)
-  rtspcam-pipeline/   RTSP ingest, decoding, scaling, frame bus    (Phase 2)
-  rtspcam-vcam/       rtspcam_vcam.dll: COM media source           (Phase 3)
-  rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera      (Phase 3)
+  rtspcam-ipc/        app ↔ virtual camera frame protocol over named pipes
+  rtspcam-pipeline/   RTSP ingest (retina), MF/OpenH264 decoding, scaling, frame bus, reconnects
+  rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (COM)
+  rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera
   rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–5)
   rtspcam-cli/        rtspcam-cli.exe: developer tool
 tools/test-rtsp/      mediamtx + ffmpeg test streams
+tools/vcam/          developer install of the media source DLL
 documentation/        plan and decision records
 ```
 
@@ -99,6 +102,21 @@ cargo run -p rtspcam-cli -- config show       # passwords redacted
 cargo run -p rtspcam-cli -- config validate
 cargo run -p rtspcam-cli -- config add-test-streams
 ```
+
+## Trying streams and cameras (developer CLI)
+
+```powershell
+./tools/test-rtsp/start.ps1 -Docker -Detach                       # test RTSP server
+cargo run -p rtspcam-cli -- probe rtsp://127.0.0.1:8554/h264-720p
+cargo run -p rtspcam-cli -- view --all --seconds 30                # every stream in the config
+
+cargo build -p rtspcam-cli -p rtspcam-vcam
+./tools/vcam/install-dev.ps1                                      # once, asks for admin
+cargo run -p rtspcam-cli -- vcam add --name "Test" --pattern       # a camera until Ctrl+C
+cargo run -p rtspcam-cli -- vcam add --name "Front" --stream rtsp://127.0.0.1:8554/h264-720p
+```
+
+The media source logs to `%ProgramData%RtspCamogsvcam.log`.
 
 ## Logs
 

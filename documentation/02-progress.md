@@ -8,8 +8,9 @@ Status as of 2026-10-08. This file records what has been built against the plan 
 | Phase | Status |
 |---|---|
 | 0 Feasibility spikes | **Not started.** Phase 1 was done first because it doesn't depend on the spike results. The Phase 0 decision record (`02-spike-results.md` in the plan) will take the next free number. |
-| 1 Workspace, foundations and CI | **Done**, except that the test RTSP streams and the CI workflow haven't been run yet (see §4). |
-| 2–8 | Not started. The crates for them exist as empty placeholders. |
+| 1 Workspace, foundations and CI | **Done**, except that the CI workflow hasn't run on GitHub yet. The test RTSP streams were verified on 2026-10-09 (see [03-progress-phases-2-3.md](03-progress-phases-2-3.md)). |
+| 2–3 | See [03-progress-phases-2-3.md](03-progress-phases-2-3.md). |
+| 4–8 | Not started. |
 
 ## 2. Phase 1 checklist
 
