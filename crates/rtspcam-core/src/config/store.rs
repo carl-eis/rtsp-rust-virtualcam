@@ -99,6 +99,7 @@ impl ConfigStore {
     }
 
     /// Records `bytes` as seen and returns `true` if they differ from the last content seen.
+    #[cfg(feature = "watch")]
     pub(super) fn remember_if_changed(&self, bytes: &[u8]) -> bool {
         let mut last = self
             .last_seen

@@ -45,6 +45,12 @@ impl LogOptions {
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoggingError {
+    #[error("could not create the log folder {dir}: {source}")]
+    CreateDir {
+        dir: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("could not create the log file in {dir}: {source}")]
     Appender {
         dir: PathBuf,
@@ -86,6 +92,11 @@ impl LogGuard {
 
 /// Installs the global subscriber and the [panic hook](install_panic_hook).
 pub fn init(opts: &LogOptions) -> Result<LogGuard, LoggingError> {
+    // The appender prunes old files before it creates the folder, so create it first.
+    std::fs::create_dir_all(&opts.dir).map_err(|source| LoggingError::CreateDir {
+        dir: opts.dir.clone(),
+        source,
+    })?;
     let appender = rolling::Builder::new()
         .rotation(Rotation::DAILY)
         .filename_prefix(&opts.file_prefix)
