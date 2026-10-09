@@ -8,6 +8,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::frame_pipe_name;
@@ -42,13 +43,16 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 pub async fn serve(camera_id: Uuid, source: Arc<dyn FrameSource>) -> io::Result<()> {
     let name = frame_pipe_name(camera_id);
     let mut server = create_instance(&name, true)?;
+    // Dropping this (when the server task is aborted) also ends every connected client.
+    let mut clients = JoinSet::new();
     loop {
         server.connect().await?;
         let connected = server;
         // Create the next instance before serving, so new clients never see "no pipe".
         server = create_instance(&name, false)?;
         let source = source.clone();
-        tokio::spawn(async move {
+        while clients.try_join_next().is_some() {}
+        clients.spawn(async move {
             if let Err(e) = serve_client(connected, source).await {
                 tracing::debug!(%camera_id, error = %e, "camera client ended");
             }
