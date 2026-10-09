@@ -23,12 +23,14 @@ rtspcam-vcam-mgr.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 uuid.workspace = true
+winsafe = { version = "0.0.29", features = ["gui"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_System_Pipes",
+    "Win32_System_Registry",
     "Win32_System_Threading",
 ] }
 windows-core.workspace = true

@@ -7,7 +7,9 @@
 //! - [`status`]: what the UI shows for each camera.
 //! - [`single_instance`]: one `rtspcam.exe` per user session.
 
+pub mod autostart;
 pub mod backend;
+pub mod form;
 pub mod manager;
 pub mod single_instance;
 pub mod source;
