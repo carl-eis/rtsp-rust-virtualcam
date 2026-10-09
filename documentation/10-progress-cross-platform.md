@@ -1,9 +1,9 @@
 # 10 — Progress: RTSP Cam on Windows, Linux and macOS
 
-Status (2026-10-09): steps A–D of the [plan](09-cross-platform-plan.md) are done and committed
-on `feat/cross-platform`. Step E (CI) is written and checked locally on Windows and Linux; it
-has not run on GitHub yet, because the branch has not been pushed. Step F (this document and
-the README) is done.
+Status (2026-10-09): steps A–F of the [plan](09-cross-platform-plan.md) are done on
+`feat/cross-platform`, and CI passes on Windows, Linux and macOS
+([PR #1](https://github.com/carl-eis/rtsp-rust-virtualcam/pull/1)). What is left needs a
+person: the checks in §4.
 
 | Step | Commit | State |
 |---|---|---|
@@ -12,7 +12,7 @@ the README) is done.
 | B. Extract `rtspcam-engine`; portable overlay text | `433766a` | done |
 | C. Linux and macOS platform services | `3639734` | done |
 | D. Slint UI, winsafe removed | `dd7e0ae` | done |
-| E. CI on Windows, Linux, macOS | see §7 | written; **not yet run on GitHub** |
+| E. CI on Windows, Linux, macOS | `9cf49d1`, `a4d6362` | done; see §7 |
 | F. Docs | this commit | done |
 
 ## 1. What was done
@@ -97,8 +97,12 @@ On Linux (Debian bookworm container, `rust:1-bookworm`):
 - The CLI with the real secret store: `dpapi:` values from Windows lock and ask for the
   password again instead of failing.
 
-macOS (from Windows, no C toolchain): `cargo check` and clippy of `rtspcam-platform`,
-`-core`, `-ipc`, `-onvif` for `aarch64-apple-darwin` pass. Nothing has run on a Mac.
+On macOS (GitHub `macos-latest`, Apple silicon): fmt, clippy `-D warnings`, all tests and the
+release build of the whole workspace, including the app and OpenH264. The app has not been
+started on a Mac.
+
+In CI on `windows-latest` and `ubuntu-latest` too: the same checks, plus the installer build
+on Windows.
 
 ## 4. Not verified
 
@@ -110,19 +114,17 @@ To verify on Windows (needs a person):
 4. Single instance against a copy of the old (winsafe) build.
 5. Tray: icon, menu (Open / Pause all / Quit), left-click opens, re-added after an Explorer
    restart; minimize to tray hides the taskbar button.
-6. Installer build (`tools/installer/build.ps1`) and install/uninstall with the Slint exe;
+6. Install/uninstall with the Slint exe (the installer builds in CI, but has not been run);
    the release build with `windows_subsystem` and the manifest; GPU-less VM (software
    renderer fallback).
 
 Elsewhere:
 
-7. Anything on macOS: build of the app and engine (OpenH264 C++), Keychain prompts for an
+7. macOS at run time (it builds and its tests pass in CI): the window, Keychain prompts for an
    unsigned binary, LaunchAgent at login, menu bar tray, file dialogs.
 8. Linux on a real desktop: Secret Service keyring path, tray on KDE/GNOME+AppIndicator, XDG
    portal file dialogs, autostart at login, Wayland (minimize-to-tray can't detect minimize
    there; the window just minimizes).
-9. CI on GitHub: the workflow has not run yet (the branch is not pushed). The macOS job is
-   the first real build of the app on a Mac.
 
 ## 5. Known gaps
 
@@ -137,7 +139,7 @@ Elsewhere:
 
 ## 6. How to resume
 
-1. Push the branch; CI runs on pushes to `feat/**`. Fix what the macOS job reports.
+1. Review and merge PR #1.
 2. Work through §4.
 
 ## 7. Step E (CI)

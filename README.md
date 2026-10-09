@@ -12,7 +12,7 @@ kernel driver is needed. Cameras exist only while the app is running.
 
 | | Windows 11 | Linux | macOS |
 |---|---|---|---|
-| App window, stream list, live preview, dialogs, tray | yes | yes (tray needs a StatusNotifierItem host) | builds in theory; **not yet built or run** |
+| App window, stream list, live preview, dialogs, tray | yes | yes (tray needs a StatusNotifierItem host) | builds and passes its tests in CI; **not yet run** |
 | Virtual cameras | yes | not yet ("not supported on this platform yet") | not yet |
 | Decoding | H.264, H.265 (with the HEVC extension), MJPEG | H.264 only (OpenH264) | H.264 only (OpenH264) |
 | Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
@@ -128,7 +128,7 @@ Linux (checked on Debian bookworm):
 
 macOS:
 
-- Xcode Command Line Tools. Not yet built or run; see
+- Xcode Command Line Tools. Builds and passes its tests in CI, but the app has not been run on a Mac yet; see
   [10](documentation/10-progress-cross-platform.md).
 
 Optional everywhere:
