@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rtspcam_app::{Activity, CameraManager, CameraStatus, ManagerOptions, VcamState};
 use rtspcam_core::Config;
 use rtspcam_core::config::{Protocol, StreamConfig};
+use rtspcam_engine::{Activity, CameraManager, CameraStatus, ManagerOptions, VcamState};
 use rtspcam_ipc::client::FrameClient;
 use rtspcam_ipc::server::serve;
 use rtspcam_ipc::{FrameSource, Message, PixelFormat, StreamStatus, VideoFormat};

@@ -12,7 +12,7 @@ use winsafe::{self as w, co, gui, prelude::*};
 
 use super::picture_dialog::PictureDialog;
 use super::preview::PreviewPane;
-use crate::form::{
+use rtspcam_engine::form::{
     FIT_LABELS, FPS_LABELS, FormError, RESOLUTION_LABELS, StreamForm, TRANSPORT_LABELS,
 };
 

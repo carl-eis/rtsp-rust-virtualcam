@@ -1,0 +1,25 @@
+[package]
+name = "rtspcam-engine"
+description = "RTSP Cam's engine: camera manager, preview, status and the stream form, without UI or OS code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+ab_glyph.workspace = true
+chrono.workspace = true
+rtspcam-core.workspace = true
+rtspcam-ipc.workspace = true
+rtspcam-pipeline.workspace = true
+rtspcam-platform.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+rtspcam-ipc = { workspace = true, features = ["server"] }
+
+[lints]
+workspace = true

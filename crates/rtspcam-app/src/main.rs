@@ -11,11 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use rtspcam_app::{CameraManager, ManagerOptions, ui};
+use rtspcam_app::ui;
 use rtspcam_core::config::ConfigStore;
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::logging::{self, LogOptions};
 use rtspcam_core::paths;
+use rtspcam_engine::{CameraManager, ManagerOptions};
 use rtspcam_platform::{CameraError, Instance};
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 use windows::core::HSTRING;

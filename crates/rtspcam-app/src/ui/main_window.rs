@@ -17,8 +17,8 @@ use super::preview::PreviewPane;
 use super::settings_dialog::SettingsDialog;
 use super::stream_dialog::StreamDialog;
 use super::tray::{AppIcon, Tray};
-use crate::Preview;
-use crate::status::{Activity, CameraStatus, VcamState};
+use rtspcam_engine::Preview;
+use rtspcam_engine::{Activity, CameraStatus, VcamState};
 
 /// Window messages posted to the main window.
 pub(crate) const WM_TRAY: u32 = 0x8000 + 2;

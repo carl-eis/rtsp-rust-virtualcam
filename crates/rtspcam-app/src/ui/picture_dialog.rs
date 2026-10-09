@@ -6,7 +6,7 @@ use std::rc::Rc;
 use rtspcam_core::config::{Crop, MAX_CROP_PERCENT, OnDisconnect, Picture, Rotation};
 use winsafe::{co, gui, prelude::*};
 
-use crate::form::{DISCONNECT_LABELS, ROTATION_LABELS, parse_percent};
+use rtspcam_engine::form::{DISCONNECT_LABELS, ROTATION_LABELS, parse_percent};
 
 #[derive(Clone)]
 pub(crate) struct PictureDialog {

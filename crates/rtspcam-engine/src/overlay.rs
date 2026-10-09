@@ -1,25 +1,37 @@
 //! Text drawn onto camera pictures (the stream's name and the time).
 //!
-//! The text is rendered once into a coverage mask with GDI (so any installed font works),
-//! then blended into the NV12 picture: a dimmed box behind the text and white text on top.
+//! The text is rendered once into a coverage mask with `ab_glyph` and the Inter font (built in,
+//! so it looks the same on every OS), then blended into the NV12 picture: a dimmed box behind
+//! the text and white text on top.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
+use ab_glyph::{Font as _, FontRef, PxScale, ScaleFont as _, VariableFont as _, point};
 use rtspcam_pipeline::Frame;
-use windows::Win32::Foundation::COLORREF;
-use windows::Win32::Foundation::SIZE;
-use windows::Win32::Graphics::Gdi::{
-    ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS,
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DIB_RGB_COLORS, DeleteDC,
-    DeleteObject, FF_DONTCARE, FW_SEMIBOLD, GetTextExtentPoint32W, HGDIOBJ, OUT_DEFAULT_PRECIS,
-    SelectObject, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
-};
-use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::core::w;
+
+/// Inter (SIL Open Font License 1.1, see `assets/Inter-LICENSE.txt`), a variable font.
+static FONT_DATA: &[u8] = include_bytes!("../assets/Inter-VariableFont.ttf");
+
+/// Semibold, like the overlay has always used.
+const WEIGHT: f32 = 600.0;
 
 /// Luma of white text and of black in limited-range video.
 const WHITE_Y: u32 = 235;
 const BLACK_Y: u32 = 16;
+
+/// The overlay font, loaded once.
+fn font() -> Option<&'static FontRef<'static>> {
+    static FONT: OnceLock<Option<FontRef<'static>>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let mut font = FontRef::try_from_slice(FONT_DATA)
+            .map_err(|e| tracing::error!(error = %e, "the overlay font did not load"))
+            .ok()?;
+        font.set_variation(b"wght", WEIGHT);
+        Some(font)
+    })
+    .as_ref()
+}
 
 /// Text coverage, 0 (nothing) to 255 (solid), one byte per pixel.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,83 +41,56 @@ pub(crate) struct Mask {
     pub(crate) coverage: Vec<u8>,
 }
 
-/// Renders `text` at `px` pixels high. `None` if GDI fails or the text is empty.
+/// Renders `text` with an em height of `px` pixels. `None` if the text is empty.
 pub(crate) fn render_mask(text: &str, px: i32) -> Option<Mask> {
-    let wide: Vec<u16> = text.encode_utf16().collect();
-    if wide.is_empty() {
+    let font = font()?;
+    if text.is_empty() || px <= 0 {
         return None;
     }
-    // SAFETY: plain GDI calls on a memory DC that is created and destroyed here. The DIB
-    // section's pixel memory is owned by the bitmap, which outlives the slice read from it, and
-    // every object selected into the DC is deselected before it is deleted.
-    unsafe {
-        let dc = CreateCompatibleDC(None);
-        if dc.is_invalid() {
-            return None;
-        }
-        let font = CreateFontW(
-            -px,
-            0,
-            0,
-            0,
-            FW_SEMIBOLD.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY,
-            FF_DONTCARE.0 as u32,
-            w!("Segoe UI"),
-        );
-        let old_font = SelectObject(dc, HGDIOBJ(font.0));
-        let mut size = SIZE::default();
-        let measured = GetTextExtentPoint32W(dc, &wide, &mut size).as_bool();
-        let (width, height) = (size.cx.max(0) as usize, size.cy.max(0) as usize);
+    // ab_glyph scales by the line height (ascent - descent); size the em to `px` instead.
+    let units_per_em = font.units_per_em()?;
+    let scale = PxScale::from(px as f32 * font.height_unscaled() / units_per_em);
+    let scaled = font.as_scaled(scale);
 
-        let result = if measured && width > 0 && height > 0 {
-            let info = BITMAPINFO {
-                bmiHeader: BITMAPINFOHEADER {
-                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth: width as i32,
-                    biHeight: -(height as i32), // top-down
-                    biPlanes: 1,
-                    biBitCount: 32,
-                    biCompression: BI_RGB.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-            let mut bits = std::ptr::null_mut();
-            match CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
-                Ok(bitmap) if !bits.is_null() => {
-                    let old_bitmap = SelectObject(dc, HGDIOBJ(bitmap.0));
-                    // A new DIB section is black; white text on it gives the coverage directly.
-                    SetBkMode(dc, TRANSPARENT);
-                    SetTextColor(dc, COLORREF(0x00ff_ffff));
-                    let _ = TextOutW(dc, 0, 0, &wide);
-                    let pixels = std::slice::from_raw_parts(bits as *const u8, width * height * 4);
-                    // Grayscale anti-aliasing: the green channel is the coverage.
-                    let coverage = pixels.chunks_exact(4).map(|p| p[1]).collect();
-                    SelectObject(dc, old_bitmap);
-                    let _ = DeleteObject(HGDIOBJ(bitmap.0));
-                    Some(Mask {
-                        width,
-                        height,
-                        coverage,
-                    })
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        SelectObject(dc, old_font);
-        let _ = DeleteObject(HGDIOBJ(font.0));
-        let _ = DeleteDC(dc);
-        result
+    // Lay the glyphs out on one line, with kerning.
+    let mut glyphs = Vec::new();
+    let mut x = 0.0f32;
+    let mut previous = None;
+    for c in text.chars() {
+        let id = font.glyph_id(c);
+        if let Some(previous) = previous {
+            x += scaled.kern(previous, id);
+        }
+        glyphs.push(id.with_scale_and_position(scale, point(x, scaled.ascent())));
+        x += scaled.h_advance(id);
+        previous = Some(id);
     }
+    let width = x.ceil().max(0.0) as usize;
+    let height = (scaled.ascent() - scaled.descent()).ceil().max(0.0) as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut coverage = vec![0u8; width * height];
+    for glyph in glyphs {
+        let Some(outlined) = font.outline_glyph(glyph) else {
+            continue; // a space
+        };
+        let bounds = outlined.px_bounds();
+        outlined.draw(|gx, gy, c| {
+            let px = bounds.min.x as i64 + i64::from(gx);
+            let py = bounds.min.y as i64 + i64::from(gy);
+            if (0..width as i64).contains(&px) && (0..height as i64).contains(&py) {
+                let cell = &mut coverage[py as usize * width + px as usize];
+                *cell = (*cell).max((c.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+        });
+    }
+    Some(Mask {
+        width,
+        height,
+        coverage,
+    })
 }
 
 /// Darkens a box of the picture by half (luma only, so colours stay put).
@@ -205,12 +190,7 @@ impl Overlay {
 
 /// The local time as `2026-10-09 14:03:07`.
 pub(crate) fn local_time_text() -> String {
-    // SAFETY: GetLocalTime has no preconditions.
-    let t = unsafe { GetLocalTime() };
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
-    )
+    chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 #[cfg(test)]
@@ -219,7 +199,7 @@ mod tests {
 
     #[test]
     fn text_renders_a_mask_with_ink() {
-        let mask = render_mask("Front Door 12:30", 28).expect("GDI should render text");
+        let mask = render_mask("Front Door 12:30", 28).expect("the font should render text");
         assert!(mask.width > 60 && mask.height >= 20, "{mask:?}");
         assert_eq!(mask.coverage.len(), mask.width * mask.height);
         let ink = mask.coverage.iter().filter(|&&c| c > 128).count();

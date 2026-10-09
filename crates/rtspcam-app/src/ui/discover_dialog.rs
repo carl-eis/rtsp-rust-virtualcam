@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 use url::Url;
 use winsafe::{co, gui, prelude::*};
 
-use crate::form::stream_from_onvif;
+use rtspcam_engine::form::stream_from_onvif;
 
 const TIMER_ID: usize = 1;
 const SCAN_FOR: Duration = Duration::from_secs(4);

@@ -80,6 +80,31 @@ pub struct FormError {
     pub message: String,
 }
 
+/// The field's label in the form.
+pub fn field_label(field: Field) -> &'static str {
+    match field {
+        Field::Name => "Name",
+        Field::Host => "Address",
+        Field::Port => "Port",
+        Field::Path => "Path",
+        Field::Password => "Password",
+        Field::Protocol => "Protocol",
+        Field::Output => "Output",
+        Field::Picture => "Picture",
+        Field::Id => "Id",
+    }
+}
+
+/// The first two problems, one per line, for the line under the form.
+pub fn describe_errors(errors: &[FormError]) -> String {
+    errors
+        .iter()
+        .map(|e| format!("{}: {}", field_label(e.field), e.message))
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Default for StreamForm {
     fn default() -> Self {
         Self::from_stream(&StreamConfig::default())

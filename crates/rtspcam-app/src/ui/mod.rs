@@ -21,8 +21,8 @@ use rtspcam_core::{Config, ConfigError};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
-use crate::manager::{CameraManager, Preview};
-use crate::status::CameraStatus;
+use rtspcam_engine::CameraStatus;
+use rtspcam_engine::{CameraManager, Preview};
 use rtspcam_platform::InstanceLock;
 
 pub(crate) use main_window::MainWindow;
