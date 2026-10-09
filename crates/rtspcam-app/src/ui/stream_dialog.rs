@@ -1,15 +1,16 @@
 //! The Add/Edit stream dialog.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rtspcam_core::config::{Field, StreamConfig};
+use rtspcam_core::config::{BRAND_TEMPLATES, Field, Picture, StreamConfig, find_template};
 use rtspcam_pipeline::{Frame, Pipeline, PipelineOptions, SourceOptions, StreamState};
 use tokio::runtime::Handle;
 use winsafe::{self as w, co, gui, prelude::*};
 
+use super::picture_dialog::PictureDialog;
 use super::preview::PreviewPane;
 use crate::form::{
     FIT_LABELS, FPS_LABELS, FormError, RESOLUTION_LABELS, StreamForm, TRANSPORT_LABELS,
@@ -36,6 +37,8 @@ pub(crate) struct StreamDialog {
     wnd: gui::WindowModal,
     paste: gui::Edit,
     paste_btn: gui::Button,
+    preset: gui::ComboBox,
+    picture_btn: gui::Button,
     name: gui::Edit,
     host: gui::Edit,
     port: gui::Edit,
@@ -57,6 +60,7 @@ pub(crate) struct StreamDialog {
     cancel: gui::Button,
 
     base: Rc<StreamConfig>,
+    picture: Rc<Cell<Picture>>,
     others: Rc<Vec<StreamConfig>>,
     runtime: Handle,
     test: Arc<Mutex<Option<TestOutcome>>>,
@@ -120,16 +124,34 @@ impl StreamDialog {
         others: Vec<StreamConfig>,
         runtime: Handle,
     ) -> Option<StreamConfig> {
-        let base = existing.cloned().unwrap_or_default();
+        match existing {
+            Some(stream) => Self::show(parent, stream.clone(), true, others, runtime),
+            None => Self::show(parent, StreamConfig::default(), false, others, runtime),
+        }
+    }
+
+    /// Shows the dialog to add `prefill` as a new stream, for example one found by discovery.
+    pub(crate) fn run_prefilled(
+        parent: &impl GuiParent,
+        prefill: StreamConfig,
+        others: Vec<StreamConfig>,
+        runtime: Handle,
+    ) -> Option<StreamConfig> {
+        Self::show(parent, prefill, false, others, runtime)
+    }
+
+    fn show(
+        parent: &impl GuiParent,
+        base: StreamConfig,
+        editing: bool,
+        others: Vec<StreamConfig>,
+        runtime: Handle,
+    ) -> Option<StreamConfig> {
         let form = StreamForm::from_stream(&base);
-        let title = if existing.is_some() {
-            "Edit stream"
-        } else {
-            "Add stream"
-        };
+        let title = if editing { "Edit stream" } else { "Add stream" };
         let wnd = gui::WindowModal::new(gui::WindowModalOpts {
             title,
-            size: (456, 600),
+            size: (456, 632),
             ..Default::default()
         });
 
@@ -155,7 +177,25 @@ impl StreamDialog {
                 ..Default::default()
             },
         );
-        y += ROW + 8;
+        y += ROW + 4;
+        label(&wnd, "Camera brand", y);
+        let mut preset_items = vec!["Other (enter the path below)".to_owned()];
+        preset_items.extend(BRAND_TEMPLATES.iter().map(|t| t.label()));
+        let preset_refs: Vec<&str> = preset_items.iter().map(String::as_str).collect();
+        let preset_selected = find_template(base.port, &base.path)
+            .and_then(|t| BRAND_TEMPLATES.iter().position(|b| b == t))
+            .map_or(0, |i| i + 1);
+        let preset = gui::ComboBox::new(
+            &wnd,
+            gui::ComboBoxOpts {
+                position: (FIELD_X, y),
+                width: FIELD_W,
+                items: &preset_refs,
+                selected_item: Some(preset_selected as u32),
+                ..Default::default()
+            },
+        );
+        y += ROW + 4;
         label(&wnd, "Name", y);
         let name = edit(&wnd, y, &form.name, co::ES::LEFT);
         y += ROW;
@@ -219,6 +259,16 @@ impl StreamDialog {
         y += ROW;
         label(&wnd, "Fit", y);
         let fit = combo(&wnd, y, &FIT_LABELS, form.fit);
+        let picture_btn = gui::Button::new(
+            &wnd,
+            gui::ButtonOpts {
+                text: "Picture...",
+                position: (FIELD_X + 172, y - 2),
+                width: 128,
+                height: 26,
+                ..Default::default()
+            },
+        );
         y += ROW;
         let on_demand = gui::CheckBox::new(
             &wnd,
@@ -307,6 +357,8 @@ impl StreamDialog {
             wnd,
             paste,
             paste_btn,
+            preset,
+            picture_btn,
             name,
             host,
             port,
@@ -326,6 +378,7 @@ impl StreamDialog {
             thumbnail,
             ok,
             cancel,
+            picture: Rc::new(Cell::new(base.picture)),
             base: Rc::new(base),
             others: Rc::new(others),
             runtime,
@@ -354,6 +407,7 @@ impl StreamDialog {
             resolution: index(&self.resolution),
             fps: index(&self.fps),
             fit: index(&self.fit),
+            picture: self.picture.get(),
             on_demand: self.on_demand.is_checked(),
             enabled: self.enabled.is_checked(),
         }
@@ -386,12 +440,14 @@ impl StreamDialog {
 
     fn events(&self) {
         let me = self.clone();
-        self.wnd.on().wm_init_dialog(move |_| {
+        // A WindowModal is built in code, not from a dialog template, so it gets WM_CREATE
+        // (WM_INITDIALOG is never sent). Controls exist by the time this handler runs.
+        self.wnd.on().wm_create(move |_| {
             // Validation messages for an empty form would be noise; just keep OK disabled.
             me.ok.hwnd().EnableWindow(false);
             let _ = me.wnd.hwnd().SetTimer(TIMER_ID, 200, None);
             me.revalidate_quiet();
-            Ok(true)
+            Ok(0)
         });
 
         for e in [
@@ -417,6 +473,31 @@ impl StreamDialog {
                 Ok(())
             });
         }
+
+        let me = self.clone();
+        self.preset.on().cbn_sel_change(move || {
+            // Entry 0 is "Other": leave whatever is typed alone.
+            let chosen = me.preset.items().selected_index().unwrap_or(0) as usize;
+            if let Some(template) = chosen.checked_sub(1).and_then(|i| BRAND_TEMPLATES.get(i)) {
+                let mut form = me.form();
+                form.apply_template(template);
+                me.set_form(&form);
+                me.revalidate_loud();
+                if !template.note.is_empty() {
+                    me.error_text(template.note);
+                }
+            }
+            Ok(())
+        });
+
+        let me = self.clone();
+        self.picture_btn.on().bn_clicked(move || {
+            if let Some(picture) = PictureDialog::run(&me.wnd, &me.picture.get()) {
+                me.picture.set(picture);
+                me.revalidate_loud();
+            }
+            Ok(())
+        });
 
         let me = self.clone();
         self.show_pass.on().bn_clicked(move || {
@@ -604,6 +685,7 @@ fn field_name(f: Field) -> &'static str {
         Field::Password => "Password",
         Field::Protocol => "Protocol",
         Field::Output => "Output",
+        Field::Picture => "Picture",
         Field::Id => "Id",
     }
 }

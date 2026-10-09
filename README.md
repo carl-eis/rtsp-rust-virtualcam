@@ -11,9 +11,12 @@ kernel driver is needed. Cameras exist only while the app is running.
 > **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
 > virtual camera media source (Phase 3) is built and tested in-process but not yet verified in
 > camera apps. The desktop app and UI (Phases 4–5) are built and run, but the cameras have only been
-> checked through Frame Server with a test pattern, not yet in Discord or other apps. See the
-> [implementation plan](documentation/01-plan.md) and the progress records
-> ([2–3](documentation/03-progress-phases-2-3.md), [4–5](documentation/05-progress-phases-4-5.md)) and the latest [checkpoint](documentation/06-checkpoint-2026-10-09.md).
+> checked through Frame Server with a test pattern, not yet in Discord or other apps. Camera
+> discovery, brand presets, import/export and picture options (Phase 6) are built and were tried
+> against real ONVIF cameras. See the [implementation plan](documentation/01-plan.md) and the
+> progress records ([2–3](documentation/03-progress-phases-2-3.md),
+> [4–5](documentation/05-progress-phases-4-5.md), [6](documentation/07-progress-phase-6.md)) and the
+> [checkpoint](documentation/06-checkpoint-2026-10-09.md).
 
 ![RTSP Cam showing a live camera preview and its status](screenshots/main-window.png)
 
@@ -31,6 +34,16 @@ cargo run -p rtspcam-app                 # debug build, opens the window
 Click **Add stream**, enter the camera's IP address (plus user name and password), use
 **Test connection**, then **OK**. The stream's live preview appears in the window.
 Config is saved to `%APPDATA%\RtspCam\config.json`, logs go to `%LOCALAPPDATA%\RtspCam\logs`.
+
+Or click **Find cameras**: ONVIF cameras on your network are listed. Pick one, enter its
+login, **Get streams**, choose the main or sub stream, and the Add dialog opens filled in.
+
+![The Find cameras dialog listing two cameras](screenshots/find-cameras.png)
+
+Other ways to fill in the address: the **Camera brand** box in the Add dialog sets the port and
+path for Hikvision, Dahua, Amcrest, Reolink, Tapo, UniFi Protect, Axis and Foscam; **Picture...**
+rotates, flips, crops, adds the name or the time, and chooses what apps see when the stream
+drops; **File > Export / Import streams** moves streams between PCs (passwords are not included).
 
 **Make the cameras appear in Discord, OBS, the Camera app, ...** (one-time, needs admin)
 
@@ -94,7 +107,8 @@ crates/
   rtspcam-pipeline/   RTSP ingest (retina), MF/OpenH264 decoding, scaling, frame bus, reconnects
   rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (COM)
   rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera
-  rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–5)
+  rtspcam-onvif/      ONVIF: WS-Discovery scan, GetProfiles / GetStreamUri
+  rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–6)
   rtspcam-cli/        rtspcam-cli.exe: developer tool
 tools/test-rtsp/      mediamtx + ffmpeg test streams
 tools/vcam/          developer install of the media source DLL
@@ -123,6 +137,7 @@ Everything lives in one JSON file at `%APPDATA%\RtspCam\config.json`:
       "transport": "tcp",
       "output": { "width": 1280, "height": 720, "fps": 30 },
       "fit_mode": "letterbox",
+      "picture": { "rotate": "90", "show_name": true, "on_disconnect": "freeze_last_frame" },
       "on_demand": true
     }
   ]
@@ -134,6 +149,11 @@ Everything lives in one JSON file at `%APPDATA%\RtspCam\config.json`:
   into the file by hand is encrypted the next time the app saves.
 - Saves are atomic, and the previous version is kept as `config.json.bak`.
 - Edits made to the file while the app runs are picked up automatically.
+- `picture` is optional (all of its fields are too): `rotate` is `"0"`, `"90"`, `"180"` or `"270"`
+  clockwise; `crop` is the percentage to cut from each side (`left`, `top`, `right`, `bottom`,
+  at most 80 each); `show_name` and `show_time` draw text in the bottom-left corner;
+  `on_disconnect` is `"no_signal"` (default) or `"freeze_last_frame"`. Order: crop, rotate, flip,
+  text, then scaling to the output size.
 
 The developer CLI can inspect it:
 
@@ -142,6 +162,8 @@ cargo run -p rtspcam-cli -- config path
 cargo run -p rtspcam-cli -- config show       # passwords redacted
 cargo run -p rtspcam-cli -- config validate
 cargo run -p rtspcam-cli -- config add-test-streams
+cargo run -p rtspcam-cli -- config export streams.json   # no passwords
+cargo run -p rtspcam-cli -- config import streams.json   # new ids, names made unique
 ```
 
 ## Trying streams and cameras (developer CLI)
@@ -151,13 +173,17 @@ cargo run -p rtspcam-cli -- config add-test-streams
 cargo run -p rtspcam-cli -- probe rtsp://127.0.0.1:8554/h264-720p
 cargo run -p rtspcam-cli -- view --all --seconds 30                # every stream in the config
 
+cargo run -p rtspcam-cli -- onvif discover                         # ONVIF cameras on the LAN
+cargo run -p rtspcam-cli -- onvif streams 192.168.1.50 -u admin -p secret
+cargo run -p rtspcam-cli -- onvif streams 192.168.1.50:2020 --credentials-from "Front Door"
+
 cargo build -p rtspcam-cli -p rtspcam-vcam
 ./tools/vcam/install-dev.ps1                                      # once, asks for admin
 cargo run -p rtspcam-cli -- vcam add --name "Test" --pattern       # a camera until Ctrl+C
 cargo run -p rtspcam-cli -- vcam add --name "Front" --stream rtsp://127.0.0.1:8554/h264-720p
 ```
 
-The media source logs to `%ProgramData%RtspCamogsvcam.log`.
+The media source logs to `%ProgramData%\RtspCam\logs\vcam.log`.
 
 ## Logs
 

@@ -3,10 +3,12 @@
 //! - `config`: inspect and edit the config file.
 //! - `probe`, `view`: connect to RTSP streams and decode them without the app.
 //!
+//! - `onvif`: find ONVIF cameras and list their streams.
 //! - `vcam`: register the media source DLL, create and list virtual cameras, test the DLL.
 
 #![allow(clippy::print_stdout)]
 
+mod onvif;
 mod rtsp;
 mod vcam;
 
@@ -15,7 +17,7 @@ use std::process::ExitCode;
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use rtspcam_core::config::ConfigStore;
+use rtspcam_core::config::{ConfigStore, export_streams, import_streams};
 use rtspcam_core::logging::{self, LogOptions};
 use rtspcam_core::{LogLevel, Secret, StreamConfig, paths};
 use serde_json::Value;
@@ -44,6 +46,9 @@ enum Command {
     Probe(rtsp::ProbeArgs),
     /// Run streams through the full pipeline and print their status every second.
     View(rtsp::ViewArgs),
+    /// Find ONVIF cameras and list their streams.
+    #[command(subcommand)]
+    Onvif(onvif::OnvifCommand),
     /// Virtual cameras: register the DLL, create test cameras, list them.
     #[command(subcommand)]
     Vcam(vcam::VcamCommand),
@@ -57,6 +62,10 @@ enum ConfigCommand {
     Show,
     /// Check the config and list any problems. Exits with status 1 if there are any.
     Validate,
+    /// Write the streams (without passwords) to a file.
+    Export { file: PathBuf },
+    /// Add the streams from an exported file. Names already in use get a number appended.
+    Import { file: PathBuf },
     /// Add the streams published by tools/test-rtsp (mediamtx). Existing names are skipped.
     AddTestStreams {
         /// Host running mediamtx.
@@ -109,6 +118,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config(cmd) => config_command(&store, cmd),
         Command::Probe(args) => rtsp::probe(&store, args),
         Command::View(args) => rtsp::view(&store, args),
+        Command::Onvif(cmd) => onvif::run(&store, cmd),
         Command::Vcam(cmd) => vcam::run(&store, cmd),
     }
 }
@@ -140,6 +150,27 @@ fn config_command(store: &ConfigStore, cmd: ConfigCommand) -> anyhow::Result<Exi
                 store.path().display(),
                 config.streams.len()
             );
+        }
+        ConfigCommand::Export { file } => {
+            let config = store.load()?;
+            let text = export_streams(&config.streams)?;
+            std::fs::write(&file, text)
+                .with_context(|| format!("could not write {}", file.display()))?;
+            println!(
+                "Exported {} streams to {}",
+                config.streams.len(),
+                file.display()
+            );
+        }
+        ConfigCommand::Import { file } => {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("could not read {}", file.display()))?;
+            let mut config = store.load()?;
+            let report = import_streams(&mut config, &text)?;
+            if !report.added.is_empty() {
+                store.save(&config).context("could not save the config")?;
+            }
+            println!("{}", report.summary().replace("\r\n", "\n"));
         }
         ConfigCommand::AddTestStreams { host, port } => {
             let mut config = store.load()?;

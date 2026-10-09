@@ -11,6 +11,8 @@ use uuid::Uuid;
 use winsafe::{self as w, co, gui, prelude::*};
 
 use super::Core;
+use super::discover_dialog::DiscoverDialog;
+use super::file_dialog;
 use super::preview::PreviewPane;
 use super::settings_dialog::SettingsDialog;
 use super::stream_dialog::StreamDialog;
@@ -35,6 +37,9 @@ const ID_LOGS: u16 = 1007;
 const ID_ABOUT: u16 = 1008;
 const ID_OPEN: u16 = 1009;
 const ID_PAUSE: u16 = 1010;
+const ID_FIND: u16 = 1011;
+const ID_IMPORT: u16 = 1012;
+const ID_EXPORT: u16 = 1013;
 
 const TIMER_STATUS: usize = 1;
 const TIMER_PREVIEW: usize = 2;
@@ -43,6 +48,7 @@ const TIMER_PREVIEW: usize = 2;
 pub(crate) struct MainWindow {
     wnd: gui::WindowMain,
     btn_add: gui::Button,
+    btn_find: gui::Button,
     btn_edit: gui::Button,
     btn_remove: gui::Button,
     btn_toggle: gui::Button,
@@ -99,10 +105,11 @@ impl MainWindow {
             )
         };
         let btn_add = button("&Add stream", 0);
-        let btn_edit = button("&Edit", 1);
-        let btn_remove = button("&Remove", 2);
-        let btn_toggle = button("&Stop", 3);
-        let btn_settings = button("Se&ttings", 4);
+        let btn_find = button("&Find cameras", 1);
+        let btn_edit = button("&Edit", 2);
+        let btn_remove = button("&Remove", 3);
+        let btn_toggle = button("&Stop", 4);
+        let btn_settings = button("Se&ttings", 5);
 
         let list = gui::ListView::<()>::new(
             &wnd,
@@ -143,6 +150,7 @@ impl MainWindow {
         let me = Self {
             wnd,
             btn_add,
+            btn_find,
             btn_edit,
             btn_remove,
             btn_toggle,
@@ -240,6 +248,9 @@ impl MainWindow {
             }};
         }
         command!(ID_ADD, Some(&self.btn_add), add_stream);
+        command!(ID_FIND, Some(&self.btn_find), find_cameras);
+        command!(ID_IMPORT, None::<&gui::Button>, import_streams);
+        command!(ID_EXPORT, None::<&gui::Button>, export_streams);
         command!(ID_EDIT, Some(&self.btn_edit), edit_stream);
         command!(ID_REMOVE, Some(&self.btn_remove), remove_stream);
         command!(ID_TOGGLE, Some(&self.btn_toggle), toggle_stream);
@@ -628,6 +639,95 @@ impl MainWindow {
         let Some(stream) = StreamDialog::run(&self.wnd, None, others, self.core.runtime()) else {
             return;
         };
+        self.add_new(stream);
+    }
+
+    /// Scans for ONVIF cameras, then lets the user review the chosen one like any new stream.
+    fn find_cameras(&self) {
+        let others = self.core.config.borrow().streams.clone();
+        let Some(found) = DiscoverDialog::run(&self.wnd, others.clone(), self.core.runtime())
+        else {
+            return;
+        };
+        let Some(stream) =
+            StreamDialog::run_prefilled(&self.wnd, found, others, self.core.runtime())
+        else {
+            return;
+        };
+        self.add_new(stream);
+    }
+
+    /// Adds the streams from a file chosen by the user.
+    fn import_streams(&self) {
+        let Some(path) = file_dialog::open_json(self.wnd.hwnd()) else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                self.message(
+                    &format!("Could not read {}: {e}", path.display()),
+                    "Import streams",
+                    co::MB::ICONERROR,
+                );
+                return;
+            }
+        };
+        let mut config = self.core.config.borrow().clone();
+        let report = match rtspcam_core::config::import_streams(&mut config, &text) {
+            Ok(report) => report,
+            Err(e) => {
+                self.message(&e.to_string(), "Import streams", co::MB::ICONERROR);
+                return;
+            }
+        };
+        if !report.added.is_empty() && !self.save(config) {
+            return;
+        }
+        self.message(&report.summary(), "Import streams", co::MB::ICONINFORMATION);
+    }
+
+    /// Writes all streams, without passwords, to a file chosen by the user.
+    fn export_streams(&self) {
+        let streams = self.core.config.borrow().streams.clone();
+        if streams.is_empty() {
+            self.message(
+                "There are no streams to export.",
+                "Export streams",
+                co::MB::ICONINFORMATION,
+            );
+            return;
+        }
+        let Some(path) = file_dialog::save_json(self.wnd.hwnd(), "rtspcam-streams.json") else {
+            return;
+        };
+        let result = rtspcam_core::config::export_streams(&streams)
+            .map_err(|e| e.to_string())
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        match result {
+            Ok(()) => self.message(
+                &format!(
+                    "Exported {} stream{} to {}.\r\n\r\nPasswords are not included.",
+                    streams.len(),
+                    if streams.len() == 1 { "" } else { "s" },
+                    path.display()
+                ),
+                "Export streams",
+                co::MB::ICONINFORMATION,
+            ),
+            Err(e) => self.message(
+                &format!("Could not write {}: {e}", path.display()),
+                "Export streams",
+                co::MB::ICONERROR,
+            ),
+        }
+    }
+
+    fn message(&self, text: &str, title: &str, icon: co::MB) {
+        let _ = self.wnd.hwnd().MessageBox(text, title, co::MB::OK | icon);
+    }
+
+    fn add_new(&self, stream: StreamConfig) {
         let mut config = self.core.config.borrow().clone();
         let id = stream.id;
         config.streams.push(stream);
@@ -775,6 +875,19 @@ fn status_text(st: &CameraStatus) -> String {
 fn build_menu() -> w::AnyResult<w::HMENU> {
     let menu = w::HMENU::CreateMenu()?;
     let file = w::HMENU::CreatePopupMenu()?;
+    file.append_item(&[w::MenuItem::Entry {
+        cmd_id: ID_FIND,
+        text: "&Find cameras...",
+    }])?;
+    file.append_item(&[w::MenuItem::Entry {
+        cmd_id: ID_IMPORT,
+        text: "&Import streams...",
+    }])?;
+    file.append_item(&[w::MenuItem::Entry {
+        cmd_id: ID_EXPORT,
+        text: "&Export streams...",
+    }])?;
+    file.append_item(&[w::MenuItem::Separator])?;
     file.append_item(&[w::MenuItem::Entry {
         cmd_id: ID_SETTINGS,
         text: "&Settings...",

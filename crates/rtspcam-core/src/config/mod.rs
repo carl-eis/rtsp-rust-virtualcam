@@ -5,8 +5,11 @@
 //! unknown fields are kept in `extra` and written back unchanged.
 
 mod migrate;
+mod picture;
 mod protocol;
 mod store;
+mod templates;
+mod transfer;
 mod url;
 mod validate;
 #[cfg(feature = "watch")]
@@ -19,8 +22,11 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 pub use migrate::CURRENT_VERSION;
+pub use picture::{Crop, MAX_CROP_PERCENT, OnDisconnect, Picture, Rotation};
 pub use protocol::Protocol;
 pub use store::ConfigStore;
+pub use templates::{BRAND_TEMPLATES, BrandTemplate, find_template};
+pub use transfer::{ExportError, ImportReport, export_streams, import_streams, unique_stream_name};
 pub use url::{StreamUrl, UrlError, parse_stream_url};
 pub use validate::{Field, Problem, ValidationIssue};
 #[cfg(feature = "watch")]
@@ -108,6 +114,9 @@ pub struct StreamConfig {
     pub transport: Transport,
     pub output: OutputFormat,
     pub fit_mode: FitMode,
+    /// Rotate, flip, crop, text overlay, and what to show when the stream drops.
+    #[serde(skip_serializing_if = "Picture::is_default")]
+    pub picture: Picture,
     /// Only connect while an app is using the webcam or the preview is open.
     pub on_demand: bool,
     #[serde(flatten)]
@@ -130,6 +139,7 @@ impl Default for StreamConfig {
             transport: Transport::default(),
             output: OutputFormat::default(),
             fit_mode: FitMode::default(),
+            picture: Picture::default(),
             on_demand: true,
             extra: Map::new(),
         }

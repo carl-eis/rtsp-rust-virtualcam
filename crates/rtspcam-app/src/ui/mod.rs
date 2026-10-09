@@ -3,7 +3,10 @@
 //! [`run`] owns the whole GUI session: it builds the window, starts the camera manager, and
 //! returns after the window closed and the cameras were shut down.
 
+mod discover_dialog;
+mod file_dialog;
 mod main_window;
+mod picture_dialog;
 mod preview;
 mod settings_dialog;
 mod stream_dialog;

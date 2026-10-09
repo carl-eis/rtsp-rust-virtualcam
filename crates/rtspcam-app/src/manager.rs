@@ -21,9 +21,10 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use rtspcam_core::config::StreamConfig;
+use rtspcam_core::config::{OnDisconnect, Picture, StreamConfig};
 use rtspcam_core::{Config, FitMode};
 use rtspcam_ipc::server::serve;
+use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
     Frame, FrameBus, Pipeline, PipelineError, PipelineOptions, SourceOptions, StreamState,
 };
@@ -34,6 +35,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::backend::CameraBackend;
+use crate::overlay::{Overlay, local_time_text};
 use crate::source::CameraSource;
 use crate::status::{Activity, CameraStatus, VcamState};
 
@@ -73,11 +75,62 @@ struct Demand {
     previews: usize,
 }
 
+/// Remembers the adjusted picture so every reader gets the same one without redoing the work.
+#[derive(Default)]
+struct Adjusted {
+    /// The decoded picture `result` was made from, and the clock text drawn on it.
+    from: Option<(Arc<Frame>, String)>,
+    result: Option<Arc<Frame>>,
+    overlay: Overlay,
+    /// The last picture handed out (kept for "freeze last frame").
+    shown: Option<Arc<Frame>>,
+}
+
+impl Adjusted {
+    fn adjust(&mut self, raw: Arc<Frame>, name: &str, picture: &Picture) -> Arc<Frame> {
+        if !picture.changes_frames() {
+            return raw;
+        }
+        let clock = if picture.show_time {
+            local_time_text()
+        } else {
+            String::new()
+        };
+        if let (Some((from, at)), Some(result)) = (&self.from, &self.result)
+            && Arc::ptr_eq(from, &raw)
+            && *at == clock
+        {
+            return result.clone();
+        }
+        let mut frame = match transform::adjust(&raw, picture) {
+            Some(f) => f,
+            None => (*raw).clone(),
+        };
+        let mut lines = Vec::new();
+        if picture.show_name {
+            lines.push(name.to_owned());
+        }
+        if picture.show_time {
+            lines.push(clock.clone());
+        }
+        if !lines.is_empty() {
+            frame = self.overlay.draw(frame, &lines);
+        }
+        let result = Arc::new(frame);
+        self.from = Some((raw, clock));
+        self.result = Some(result.clone());
+        result
+    }
+}
+
 /// State shared by a camera's pipe server, supervisor, previews and the manager.
 pub(crate) struct CameraShared {
     pub(crate) id: Uuid,
     pub(crate) name: String,
     pub(crate) fit: FitMode,
+    picture: Picture,
+    /// The adjusted copy of the newest picture, and the last one shown (for "freeze").
+    adjusted: Mutex<Adjusted>,
     bus: RwLock<Option<FrameBus>>,
     activity: watch::Sender<Activity>,
     demand: watch::Sender<Demand>,
@@ -87,11 +140,13 @@ pub(crate) struct CameraShared {
 }
 
 impl CameraShared {
-    fn new(config: &StreamConfig, notify: Notify) -> Self {
+    pub(crate) fn new(config: &StreamConfig, notify: Notify) -> Self {
         Self {
             id: config.id,
             name: config.name.clone(),
             fit: config.fit_mode,
+            picture: config.picture,
+            adjusted: Mutex::default(),
             bus: RwLock::new(None),
             activity: watch::Sender::new(Activity::Idle),
             demand: watch::Sender::new(Demand::default()),
@@ -101,12 +156,36 @@ impl CameraShared {
         }
     }
 
+    /// The newest picture with the stream's picture settings applied (crop, rotate, flip, text).
+    ///
+    /// With "freeze last frame" the last picture is kept while the stream is down, so apps keep
+    /// seeing it instead of "No signal".
     pub(crate) fn latest_frame(&self) -> Option<Arc<Frame>> {
-        self.bus
+        let raw = self
+            .bus
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()?
-            .latest()
+            .as_ref()
+            .and_then(FrameBus::latest);
+        let mut adjusted = self.adjusted.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(raw) = raw else {
+            return self
+                .holds_last_frame()
+                .then(|| adjusted.shown.clone())
+                .flatten();
+        };
+        let shown = adjusted.adjust(raw, &self.name, &self.picture);
+        if self.picture.on_disconnect == OnDisconnect::FreezeLastFrame {
+            adjusted.shown = Some(shown.clone());
+        }
+        Some(shown)
+    }
+
+    /// Whether apps should keep seeing the last picture now: asked for, and the camera is not
+    /// switched off or misconfigured.
+    pub(crate) fn holds_last_frame(&self) -> bool {
+        self.picture.on_disconnect == OnDisconnect::FreezeLastFrame
+            && !matches!(self.activity(), Activity::Paused | Activity::Invalid(_))
     }
 
     pub(crate) fn activity(&self) -> Activity {
@@ -125,7 +204,7 @@ impl CameraShared {
         (self.notify)();
     }
 
-    fn set_bus(&self, bus: Option<FrameBus>) {
+    pub(crate) fn set_bus(&self, bus: Option<FrameBus>) {
         *self.bus.write().unwrap_or_else(PoisonError::into_inner) = bus;
     }
 
@@ -578,5 +657,90 @@ async fn supervise(
             state = pipeline_changed => camera.set_activity(Activity::Running(state)),
             () = grace_over => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rtspcam_core::config::Rotation;
+
+    use super::*;
+
+    fn camera(picture: Picture) -> CameraShared {
+        let mut config = StreamConfig::new("Door", "10.0.0.2");
+        config.picture = picture;
+        CameraShared::new(&config, Arc::new(|| {}))
+    }
+
+    fn publish(camera: &CameraShared, frame: Frame) -> FrameBus {
+        let bus = FrameBus::new();
+        bus.publish(frame);
+        camera.set_bus(Some(bus.clone()));
+        bus
+    }
+
+    #[test]
+    fn unchanged_pictures_pass_through() {
+        let cam = camera(Picture::default());
+        let bus = publish(&cam, Frame::black(64, 32));
+        assert!(Arc::ptr_eq(
+            &cam.latest_frame().unwrap(),
+            &bus.latest().unwrap()
+        ));
+    }
+
+    #[test]
+    fn rotation_is_applied_once_per_picture() {
+        let cam = camera(Picture {
+            rotate: Rotation::Cw90,
+            ..Picture::default()
+        });
+        let bus = publish(&cam, Frame::black(64, 32));
+        let first = cam.latest_frame().unwrap();
+        assert_eq!((first.width(), first.height()), (32, 64));
+        assert!(
+            Arc::ptr_eq(&first, &cam.latest_frame().unwrap()),
+            "the same picture is not processed twice"
+        );
+        bus.publish(Frame::black(64, 32));
+        assert!(!Arc::ptr_eq(&first, &cam.latest_frame().unwrap()));
+    }
+
+    #[test]
+    fn the_name_is_drawn_on_the_picture() {
+        let cam = camera(Picture {
+            show_name: true,
+            ..Picture::default()
+        });
+        publish(&cam, Frame::black(640, 480));
+        let shown = cam.latest_frame().unwrap();
+        assert_eq!((shown.width(), shown.height()), (640, 480));
+        assert!(shown.y().iter().any(|&y| y > 100), "no text was drawn");
+    }
+
+    #[test]
+    fn no_signal_is_the_default_when_the_stream_goes() {
+        let cam = camera(Picture::default());
+        publish(&cam, Frame::black(64, 32));
+        assert!(cam.latest_frame().is_some());
+        cam.set_bus(None);
+        assert!(cam.latest_frame().is_none());
+        assert!(!cam.holds_last_frame());
+    }
+
+    #[test]
+    fn frozen_cameras_keep_the_last_picture() {
+        let cam = camera(Picture {
+            on_disconnect: OnDisconnect::FreezeLastFrame,
+            ..Picture::default()
+        });
+        assert!(cam.latest_frame().is_none(), "nothing to hold yet");
+        publish(&cam, Frame::black(64, 32));
+        let last = cam.latest_frame().unwrap();
+        cam.set_bus(None);
+        assert!(Arc::ptr_eq(&last, &cam.latest_frame().unwrap()));
+        // Switched off on purpose: apps should be told, not shown a stale picture.
+        cam.set_activity(Activity::Paused);
+        assert!(!cam.holds_last_frame());
     }
 }

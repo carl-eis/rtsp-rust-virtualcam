@@ -16,6 +16,7 @@ pub enum Field {
     Path,
     Password,
     Output,
+    Picture,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -42,6 +43,8 @@ pub enum Problem {
     PasswordLocked,
     #[error("unsupported output format {width}x{height} @ {fps} fps")]
     UnsupportedOutput { width: u32, height: u32, fps: u32 },
+    #[error("the crop must leave part of each side visible (at most 80% off one edge)")]
+    InvalidCrop,
 }
 
 /// One problem with one stream.
@@ -115,6 +118,9 @@ impl StreamConfig {
                 Field::Output,
                 Problem::UnsupportedOutput { width, height, fps },
             );
+        }
+        if !self.picture.crop.is_valid() {
+            push(Field::Picture, Problem::InvalidCrop);
         }
         issues
     }
