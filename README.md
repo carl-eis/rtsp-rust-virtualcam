@@ -10,9 +10,48 @@ kernel driver is needed. Cameras exist only while the app is running.
 
 > **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
 > virtual camera media source (Phase 3) is built and tested in-process but not yet verified in
-> camera apps. The desktop app and UI (Phases 4–5) don't exist yet. See the
-> [implementation plan](documentation/01-plan.md) and the
-> [progress record](documentation/03-progress-phases-2-3.md).
+> camera apps. The desktop app and UI (Phases 4–5) are built and run, but the cameras have only been
+> checked through Frame Server with a test pattern, not yet in Discord or other apps. See the
+> [implementation plan](documentation/01-plan.md) and the progress records
+> ([2–3](documentation/03-progress-phases-2-3.md), [4–5](documentation/05-progress-phases-4-5.md)).
+
+## Quickstart
+
+Needs the [requirements](#requirements) below (Windows 11, Rust, Visual Studio Build Tools).
+Run these from the repository root in PowerShell.
+
+**Build and run the app**
+
+```powershell
+cargo run -p rtspcam-app                 # debug build, opens the window
+```
+
+Click **Add stream**, enter the camera's IP address (plus user name and password), use
+**Test connection**, then **OK**. The stream's live preview appears in the window.
+Config is saved to `%APPDATA%\RtspCam\config.json`, logs go to `%LOCALAPPDATA%\RtspCam\logs`.
+
+**Make the cameras appear in Discord, OBS, the Camera app, ...** (one-time, needs admin)
+
+```powershell
+cargo build -p rtspcam-cli -p rtspcam-vcam
+./tools/vcam/install-dev.ps1             # asks for elevation (UAC)
+```
+
+Without this the preview works but each camera shows "Access is denied". Restart Discord
+after adding a camera so it re-lists devices. Rebuild and re-run the script after changing
+the DLL. `./tools/vcam/install-dev.ps1 -Uninstall` removes it.
+
+**Build an exe**
+
+```powershell
+cargo build -p rtspcam-app --release     # -> target\release\rtspcam.exe
+```
+
+The release build is a windowed app (no console) with the manifest embedded. The optional
+flags are `--minimized` (start in the tray) and `--headless` (no window, Ctrl+C quits). The
+exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
+`cargo build -p rtspcam-vcam --release` and installed with
+`./tools/vcam/install-dev.ps1 -Configuration release`. There is no installer yet (Phase 7).
 
 ## Requirements
 
