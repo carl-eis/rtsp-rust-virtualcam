@@ -129,6 +129,11 @@ Elsewhere:
 - H.265 and MJPEG decode only on Windows (platform decoders); elsewhere only H.264.
 - Linux runtime needs X11/Wayland client libraries (`libx11-6 libxcursor1 libxrandr2 libxi6
   libxkbcommon-x11-0` on X11), loaded at run time.
+- Linux builds need `libfontconfig1-dev`: Slint's font lookup (`fontique`) links fontconfig.
+  The `rust:1-bookworm` image used during C and D has it, so this only showed up on the
+  GitHub runner. `RUST_FONTCONFIG_DLOPEN` does not help: it switches `yeslogic-fontconfig-sys`
+  to dlopen, but `fontique` only uses that through its own `fontconfig-dlopen` feature, which
+  Slint does not expose.
 
 ## 6. How to resume
 
@@ -150,7 +155,21 @@ Elsewhere:
   `#[cfg(target_os = "linux")]` in core.
 - `rust-toolchain.toml` no longer pins `x86_64-pc-windows-msvc`; each OS uses its host target.
   The static-CRT flag in `.cargo/config.toml` is per target and still applies on Windows.
-- `release.yml` is unchanged (Windows installer on `v*` tags).
+- `release.yml` is unchanged (Windows installer on `v*` tags), apart from the toolchain step
+  below.
+
+Fixes after the first run on GitHub:
+
+- macOS failed before any build: the runner's preinstalled, older stable was used, because
+  `rustup show active-toolchain` succeeds without updating. That cargo rejects
+  `default-features = false` on a workspace dependency whose workspace entry has the defaults
+  on (`rtspcam-platform` → `rtspcam-pipeline`); newer cargo accepts it silently and enables
+  them anyway. Now the workspace entry for `rtspcam-pipeline` has `default-features = false`
+  (like `rtspcam-core`), and the app, CLI, engine and platform's dev-dependency turn them on.
+  `rtspcam-platform` built alone now really leaves out OpenH264. The toolchain step in both
+  workflows runs `rustup update stable` first.
+- Linux failed on `yeslogic-fontconfig-sys` (no `libfontconfig1-dev` on the runner); the job
+  installs it now (see §5).
 - Checked locally: on Windows fmt, both clippy runs and all tests; on Linux (Docker, below)
   the cfg check, fmt, clippy and all tests.
 

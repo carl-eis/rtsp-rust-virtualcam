@@ -13,7 +13,7 @@ rtspcam-core.workspace = true
 rtspcam-ipc = { workspace = true, features = ["server"] }
 # No default features: building this crate alone (for example `cargo check` for another OS)
 # shouldn't need the OpenH264 C++ build. The app turns the defaults on.
-rtspcam-pipeline = { workspace = true, default-features = false }
+rtspcam-pipeline.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 tracing.workspace = true
 uuid.workspace = true
@@ -41,7 +41,7 @@ windows-core.workspace = true
 [dev-dependencies]
 openh264.workspace = true
 serde_json.workspace = true
-rtspcam-pipeline.workspace = true
+rtspcam-pipeline = { workspace = true, default-features = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 

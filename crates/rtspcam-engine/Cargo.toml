@@ -11,7 +11,7 @@ ab_glyph.workspace = true
 chrono.workspace = true
 rtspcam-core.workspace = true
 rtspcam-ipc.workspace = true
-rtspcam-pipeline.workspace = true
+rtspcam-pipeline = { workspace = true, default-features = true }
 rtspcam-platform.workspace = true
 tokio.workspace = true
 tracing.workspace = true

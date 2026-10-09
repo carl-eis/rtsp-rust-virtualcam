@@ -36,9 +36,15 @@ jobs:
 
       # rustup reads rust-toolchain.toml and installs the pinned channel and components.
       - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        # `rustup show active-toolchain` alone would accept an outdated preinstalled stable.
+        run: rustup update --no-self-update stable && rustup toolchain install && cargo --version
 
       - uses: Swatinem/rust-cache@v2
+
+      # Slint's font lookup (fontique) links fontconfig.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev
 
       - name: Format
         run: cargo fmt --all -- --check

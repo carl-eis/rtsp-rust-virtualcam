@@ -117,7 +117,8 @@ Windows:
 
 Linux (checked on Debian bookworm):
 
-- Build: `build-essential` and `pkg-config`; no GUI `-dev` packages are needed.
+- Build: `build-essential`, `pkg-config` and `libfontconfig1-dev` (Slint's font lookup links
+  fontconfig); no other GUI `-dev` packages are needed.
 - Run: the X11 or Wayland client libraries, loaded at run time. On a minimal X11 system:
   `libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0`, plus fonts
   (`fonts-dejavu-core`) and OpenGL (`libgl1 libegl1`; without it Slint draws in software).

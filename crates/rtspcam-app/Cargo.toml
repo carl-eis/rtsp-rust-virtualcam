@@ -16,7 +16,7 @@ rfd = "0.17"
 rtspcam-core = { workspace = true, default-features = true }
 rtspcam-engine.workspace = true
 rtspcam-onvif.workspace = true
-rtspcam-pipeline.workspace = true
+rtspcam-pipeline = { workspace = true, default-features = true }
 rtspcam-platform.workspace = true
 # The winit backend (with OpenGL and software renderers, so a machine without usable OpenGL
 # still gets a window), the tray icon, and the window handle for parenting file dialogs. No Qt.
