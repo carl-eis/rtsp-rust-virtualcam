@@ -1,0 +1,4 @@
+# Statically link the C runtime so the exe and the DLL (loaded by the Frame Server service)
+# need no Visual C++ redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -13,9 +13,9 @@ kernel driver is needed. Cameras exist only while the app is running.
 > camera apps. The desktop app and UI (Phases 4–5) are built and run, but the cameras have only been
 > checked through Frame Server with a test pattern, not yet in Discord or other apps. Camera
 > discovery, brand presets, import/export and picture options (Phase 6) are built and were tried
-> against real ONVIF cameras. See the [implementation plan](documentation/01-plan.md) and the
+> against real ONVIF cameras. The installer (Phase 7) builds but has not been run on a clean PC. See the [implementation plan](documentation/01-plan.md) and the
 > progress records ([2–3](documentation/03-progress-phases-2-3.md),
-> [4–5](documentation/05-progress-phases-4-5.md), [6](documentation/07-progress-phase-6.md)) and the
+> [4–5](documentation/05-progress-phases-4-5.md), [6](documentation/07-progress-phase-6.md), [7](documentation/08-progress-phase-7.md)) and the
 > [checkpoint](documentation/06-checkpoint-2026-10-09.md).
 
 ![RTSP Cam showing a live camera preview and its status](screenshots/main-window.png)
@@ -66,7 +66,17 @@ The release build is a windowed app (no console) with the manifest embedded. The
 flags are `--minimized` (start in the tray) and `--headless` (no window, Ctrl+C quits). The
 exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
 `cargo build -p rtspcam-vcam --release` and installed with
-`./tools/vcam/install-dev.ps1 -Configuration release`. There is no installer yet (Phase 7).
+`./tools/vcam/install-dev.ps1 -Configuration release`. For other PCs, build the installer instead (below).
+
+**Build an installer** (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`)
+
+```powershell
+./tools/installer/build.ps1             # -> installeroutRtspCam-<version>-setup.exe
+```
+
+The setup program needs admin rights once. It installs to `C:Program FilesRtspCam`, registers
+the virtual camera DLL, and removes both on uninstall (your config is kept). Pushing a `v*` tag
+builds it in CI; see [08](documentation/08-progress-phase-7.md) for signing.
 
 ## Requirements
 
@@ -108,10 +118,11 @@ crates/
   rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (COM)
   rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera
   rtspcam-onvif/      ONVIF: WS-Discovery scan, GetProfiles / GetStreamUri
-  rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–6)
+  rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–7)
   rtspcam-cli/        rtspcam-cli.exe: developer tool
 tools/test-rtsp/      mediamtx + ffmpeg test streams
 tools/vcam/          developer install of the media source DLL
+installer/            Inno Setup script (tools/installer/build.ps1 builds it)
 documentation/        plan and decision records
 ```
 
