@@ -1,9 +1,9 @@
 # 10 — Progress: RTSP Cam on Windows, Linux and macOS
 
 Status (2026-10-09): steps A–D of the [plan](09-cross-platform-plan.md) are done and committed
-on `feat/cross-platform`. Step E (CI) has **not** been started: `.github/workflows/ci.yml` still
-runs Windows only, and `rust-toolchain.toml` still pins the Windows target. Step F (this
-document and the README) is done. Nothing has been pushed.
+on `feat/cross-platform`. Step E (CI) is written and checked locally on Windows and Linux; it
+has not run on GitHub yet, because the branch has not been pushed. Step F (this document and
+the README) is done.
 
 | Step | Commit | State |
 |---|---|---|
@@ -12,7 +12,7 @@ document and the README) is done. Nothing has been pushed.
 | B. Extract `rtspcam-engine`; portable overlay text | `433766a` | done |
 | C. Linux and macOS platform services | `3639734` | done |
 | D. Slint UI, winsafe removed | `dd7e0ae` | done |
-| E. CI on Windows, Linux, macOS | — | **not started** |
+| E. CI on Windows, Linux, macOS | see §7 | written; **not yet run on GitHub** |
 | F. Docs | this commit | done |
 
 ## 1. What was done
@@ -33,7 +33,8 @@ rtspcam-vcam-mgr    Windows-only, unchanged
 ```
 
 `cfg(target_os/windows/unix)` appears only in `rtspcam-platform`, the two Windows-only crates
-and the CLI's `vcam` gating (checked with a grep; the CI step that enforces it is part of E).
+and the CLI's `vcam` gating. `tools/ci/check-os-cfg.sh` enforces this in CI (`mise run os-cfg`
+locally).
 
 ### Traits (all re-exported from `rtspcam_platform`)
 
@@ -120,30 +121,42 @@ Elsewhere:
 8. Linux on a real desktop: Secret Service keyring path, tray on KDE/GNOME+AppIndicator, XDG
    portal file dialogs, autostart at login, Wayland (minimize-to-tray can't detect minimize
    there; the window just minimizes).
-9. CI on all three OSes (step E not done).
+9. CI on GitHub: the workflow has not run yet (the branch is not pushed). The macOS job is
+   the first real build of the app on a Mac.
 
 ## 5. Known gaps
 
 - H.265 and MJPEG decode only on Windows (platform decoders); elsewhere only H.264.
 - Linux runtime needs X11/Wayland client libraries (`libx11-6 libxcursor1 libxrandr2 libxi6
   libxkbcommon-x11-0` on X11), loaded at run time.
-- `rust-toolchain.toml` still lists `targets = ["x86_64-pc-windows-msvc"]`, so rustup also
-  downloads the Windows std on Linux/macOS (harmless, slow). Removing it is part of E.
 
-## 6. How to resume (step E)
+## 6. How to resume
 
-1. `ci.yml`: a matrix over `windows-latest`, `ubuntu-latest`, `macos-latest` with fmt, clippy
-   `-D warnings` and tests; on Windows also the DLL-set clippy (`-p rtspcam-core
-   --no-default-features`), the release build and the Inno Setup installer
-   (`choco install innosetup`, `tools/installer/build.ps1`), uploading the artifacts.
-2. A job that fails if an OS `cfg` appears outside `rtspcam-platform`, `rtspcam-vcam`,
-   `rtspcam-vcam-mgr` and the CLI's `vcam` gating.
-3. Drop the `targets` line from `rust-toolchain.toml`.
-4. Push the branch (not done yet) and fix what the macOS job reports, then work through §4.
+1. Push the branch; CI runs on pushes to `feat/**`. Fix what the macOS job reports.
+2. Work through §4.
+
+## 7. Step E (CI)
+
+- `.github/workflows/ci.yml`: a matrix over `windows-latest`, `ubuntu-latest` and
+  `macos-latest` (no fail-fast) running fmt, clippy `-D warnings`, tests and a release build,
+  and uploading the binaries per OS. Windows also runs the DLL-set clippy (`-p rtspcam-core
+  --no-default-features`) and builds the Inno Setup installer from the same release binaries
+  (`build.ps1 -SkipBuild`), uploaded as `RtspCam-setup-<sha>`. CI now also runs on pushes to
+  `feat/**` branches.
+- Job `os-cfg`: `tools/ci/check-os-cfg.sh` fails if `cfg(windows|unix|target_os|...)` appears
+  in a `.rs` file or `Cargo.toml` outside `rtspcam-platform`, `rtspcam-vcam`,
+  `rtspcam-vcam-mgr`, the CLI's `main.rs`/`Cargo.toml` (`vcam` gating) and the app's
+  `windows_subsystem` line. Checked both ways: passes on the tree, fails on an added
+  `#[cfg(target_os = "linux")]` in core.
+- `rust-toolchain.toml` no longer pins `x86_64-pc-windows-msvc`; each OS uses its host target.
+  The static-CRT flag in `.cargo/config.toml` is per target and still applies on Windows.
+- `release.yml` is unchanged (Windows installer on `v*` tags).
+- Checked locally: on Windows fmt, both clippy runs and all tests; on Linux (Docker, below)
+  the cfg check, fmt, clippy and all tests.
 
 Linux checks used during this work (Docker):
 
 ```sh
 docker run --rm -v "$PWD:/src:ro" -v rtspcam-target:/target rust:1-bookworm \
-  sh -c 'cd /src && CARGO_TARGET_DIR=/target cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=/target cargo test --workspace'
+  sh -c 'cd /src && sh tools/ci/check-os-cfg.sh && CARGO_TARGET_DIR=/target cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=/target cargo test --workspace'
 ```
