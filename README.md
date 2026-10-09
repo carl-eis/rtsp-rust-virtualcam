@@ -70,11 +70,11 @@ exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
 
 **Build an installer** (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`)
 
-./tools/installer/build.ps1             # -> installeroutRtspCam-<version>-setup.exe
-./tools/installer/build.ps1             # -> installeroutRtspCam-<version>-setup.exe
+```powershell
+./tools/installer/build.ps1             # -> installer\out\RtspCam-<version>-setup.exe
 ```
 
-The setup program needs admin rights once. It installs to `C:Program FilesRtspCam`, registers
+The setup program needs admin rights once. It installs to `C:\Program Files\RtspCam`, registers
 the virtual camera DLL, and removes both on uninstall (your config is kept). Pushing a `v*` tag
 builds it in CI; see [08](documentation/08-progress-phase-7.md) for signing.
 
