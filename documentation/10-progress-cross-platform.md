@@ -1,0 +1,149 @@
+# 10 — Progress: RTSP Cam on Windows, Linux and macOS
+
+Status (2026-10-09): steps A–D of the [plan](09-cross-platform-plan.md) are done and committed
+on `feat/cross-platform`. Step E (CI) has **not** been started: `.github/workflows/ci.yml` still
+runs Windows only, and `rust-toolchain.toml` still pins the Windows target. Step F (this
+document and the README) is done. Nothing has been pushed.
+
+| Step | Commit | State |
+|---|---|---|
+| Plan | `054a707` | [09](09-cross-platform-plan.md) |
+| A. Extract `rtspcam-platform` (Windows code moved, no behaviour change) | `a4af991` | done |
+| B. Extract `rtspcam-engine`; portable overlay text | `433766a` | done |
+| C. Linux and macOS platform services | `3639734` | done |
+| D. Slint UI, winsafe removed | `dd7e0ae` | done |
+| E. CI on Windows, Linux, macOS | — | **not started** |
+| F. Docs | this commit | done |
+
+## 1. What was done
+
+### Crate layout
+
+```
+rtspcam-core        portable: config, paths, logging, Secret + SecretStore hook, FileReplace
+rtspcam-ipc         portable: protocol, FrameSource, generic client, serve() over a FrameListener
+rtspcam-pipeline    portable: RTSP, OpenH264, scaling; PlatformDecoders hook
+rtspcam-onvif       portable (unchanged)
+rtspcam-platform    every OS-specific piece, behind traits: windows/, linux/, macos/, unix/
+rtspcam-engine      portable: CameraManager, Preview, status, form, probe, discovery, overlay
+rtspcam-app         Slint UI + main() (binary only)
+rtspcam-cli         portable; `vcam` subcommand Windows-only
+rtspcam-vcam        Windows DLL (only its pipe-opening line and two constants changed)
+rtspcam-vcam-mgr    Windows-only, unchanged
+```
+
+`cfg(target_os/windows/unix)` appears only in `rtspcam-platform`, the two Windows-only crates
+and the CLI's `vcam` gating (checked with a grep; the CI step that enforces it is part of E).
+
+### Traits (all re-exported from `rtspcam_platform`)
+
+| Trait | Windows | Linux | macOS |
+|---|---|---|---|
+| `VirtualCameraBackend` | MF virtual cameras; the backend now also serves the camera's pipe | `UnsupportedCameras` | `UnsupportedCameras` |
+| `SecretStore` (in core) | DPAPI, `dpapi:` (unchanged) | key in Secret Service, `keyring:`; fallback key file, `keyfile:` | key in Keychain, `keyring:`; same fallback |
+| `FileReplace` (in core) | `ReplaceFileW`, fallback copy+rename (unchanged) | copy + rename | copy + rename |
+| `Autostart` | HKCU `Run` value `RtspCam` (unchanged) | `~/.config/autostart/rtspcam.desktop` | `~/Library/LaunchAgents/io.github.carl-eis.rtspcam.plist` |
+| `SingleInstance` | `Local\RtspCam.SingleInstance` + `Local\RtspCam.Show` (unchanged) | lock file + Unix socket | lock file + Unix socket |
+| `FrameTransport` | `\\.\pipe\rtspcam\<id>` with the same DACL (unchanged) | Unix sockets in a 0700 runtime folder | same |
+| `PlatformDecoders` (in pipeline) | Media Foundation (unchanged) | none (OpenH264) | none (OpenH264) |
+
+A v4l2loopback backend means one type in `platform/src/linux/` implementing
+`VirtualCameraBackend` and returning it from `linux::camera_backend()`. The trait hands the
+backend the camera's `FrameSource`, which works for push backends (call `next_frame` at the
+device rate) and serving backends (pass it to `rtspcam_ipc::server::serve`).
+
+### UI (Slint 1.18)
+
+- `crates/rtspcam-app/ui/*.slint`, fluent style on every OS; Rust controllers in `src/ui/`.
+- Dialogs are modal sheets inside the main window (Slint has no owned/modal windows).
+- Tray: Slint's built-in `SystemTrayIcon` (not `tray-icon`/`muda`; no GTK).
+- Preview: worker thread scales + converts to RGBA, hands a `SharedPixelBuffer` to the UI
+  thread, at most one in flight.
+- File dialogs: `rfd`. Message boxes: sheets; fatal start-up error: `rfd::MessageDialog`.
+- App icon: `crates/rtspcam-app/assets/icon.png`, compiled in.
+
+## 2. Decisions (beyond the plan)
+
+| Topic | Decision |
+|---|---|
+| Branch | Used the existing `feat/cross-platform` (identical to `master` when work started). |
+| MSRV | `rust-version` raised 1.85 → 1.92 (Slint needs it). Fixed the MSRV-gated clippy lints this enabled (`is_multiple_of`, `as_chunks`). |
+| Overlay font | Inter (OFL 1.1, `crates/rtspcam-engine/assets/`), semibold via its weight axis. Text looks slightly different from the old Segoe UI on Windows. |
+| Pipe failure | If a camera's pipe can't be created (another copy serving it), the Windows backend now fails `create` without creating the MF camera. Before, the camera was created anyway and the status showed the pipe error. Same message. |
+| Window icon | A PNG via `@image-url`: Slint 1.18 never applies a window icon built from a pixel buffer (its icon cache key is `None`). |
+| Small text changes | About says "virtual webcams" (no "Windows"); the Find cameras hint says "the firewall"; the autostart error names the setting's label. The "still running in the tray" balloon is gone (Slint's tray has no balloons). Tray opens on single left-click. |
+
+## 3. Verified
+
+On Windows 11 (this machine):
+
+- `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
+  --workspace` pass after every step, also with `RTSPCAM_TEST_SERVER` (mediamtx in Docker),
+  including the moved Media Foundation pipeline test.
+- Ran the Slint app against the real config: live preview of a Tapo camera through Media
+  Foundation; status "Camera "LivingRoom" is available to apps" (camera created via the DLL);
+  Add stream (URL paste, validation), Picture, Find cameras (found both ONVIF cameras),
+  Settings, Help menu; a second launch exits and leaves the first running; closing the window
+  ends the process in ~160 ms. Nothing was saved to the real config.
+
+On Linux (Debian bookworm container, `rust:1-bookworm`):
+
+- fmt, clippy `-D warnings`, all tests for the whole workspace (including the app).
+- The app under Xvfb, driven with xdotool: added a password-protected stream through the UI,
+  Test connection (OpenH264), live preview at 30 fps, status "Virtual cameras are not
+  supported on this platform yet", config saved with a `keyfile:` password and a 0600 key
+  file (no D-Bus in the container, so the keyring fallback was used), File > Quit exits.
+- The CLI with the real secret store: `dpapi:` values from Windows lock and ask for the
+  password again instead of failing.
+
+macOS (from Windows, no C toolchain): `cargo check` and clippy of `rtspcam-platform`,
+`-core`, `-ipc`, `-onvif` for `aarch64-apple-darwin` pass. Nothing has run on a Mac.
+
+## 4. Not verified
+
+To verify on Windows (needs a person):
+
+1. Cameras still appear and stream in Discord, the Camera app, OBS, Chrome.
+2. DPAPI passwords saved by the old build still decrypt (tests cover new values only).
+3. Start with Windows: the Run value is written and the app starts in the tray at sign-in.
+4. Single instance against a copy of the old (winsafe) build.
+5. Tray: icon, menu (Open / Pause all / Quit), left-click opens, re-added after an Explorer
+   restart; minimize to tray hides the taskbar button.
+6. Installer build (`tools/installer/build.ps1`) and install/uninstall with the Slint exe;
+   the release build with `windows_subsystem` and the manifest; GPU-less VM (software
+   renderer fallback).
+
+Elsewhere:
+
+7. Anything on macOS: build of the app and engine (OpenH264 C++), Keychain prompts for an
+   unsigned binary, LaunchAgent at login, menu bar tray, file dialogs.
+8. Linux on a real desktop: Secret Service keyring path, tray on KDE/GNOME+AppIndicator, XDG
+   portal file dialogs, autostart at login, Wayland (minimize-to-tray can't detect minimize
+   there; the window just minimizes).
+9. CI on all three OSes (step E not done).
+
+## 5. Known gaps
+
+- H.265 and MJPEG decode only on Windows (platform decoders); elsewhere only H.264.
+- Linux runtime needs X11/Wayland client libraries (`libx11-6 libxcursor1 libxrandr2 libxi6
+  libxkbcommon-x11-0` on X11), loaded at run time.
+- `rust-toolchain.toml` still lists `targets = ["x86_64-pc-windows-msvc"]`, so rustup also
+  downloads the Windows std on Linux/macOS (harmless, slow). Removing it is part of E.
+
+## 6. How to resume (step E)
+
+1. `ci.yml`: a matrix over `windows-latest`, `ubuntu-latest`, `macos-latest` with fmt, clippy
+   `-D warnings` and tests; on Windows also the DLL-set clippy (`-p rtspcam-core
+   --no-default-features`), the release build and the Inno Setup installer
+   (`choco install innosetup`, `tools/installer/build.ps1`), uploading the artifacts.
+2. A job that fails if an OS `cfg` appears outside `rtspcam-platform`, `rtspcam-vcam`,
+   `rtspcam-vcam-mgr` and the CLI's `vcam` gating.
+3. Drop the `targets` line from `rust-toolchain.toml`.
+4. Push the branch (not done yet) and fix what the macOS job reports, then work through §4.
+
+Linux checks used during this work (Docker):
+
+```sh
+docker run --rm -v "$PWD:/src:ro" -v rtspcam-target:/target rust:1-bookworm \
+  sh -c 'cd /src && CARGO_TARGET_DIR=/target cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=/target cargo test --workspace'
+```
