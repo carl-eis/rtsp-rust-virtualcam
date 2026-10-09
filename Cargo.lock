@@ -1252,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "rtspcam-core",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1292,7 +1292,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "directories",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-ipc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rtspcam-core",
  "thiserror",
@@ -1325,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-onvif"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64",
  "if-addrs",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-pipeline"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytes",
  "futures",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-vcam"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rtspcam-core",
  "rtspcam-ipc",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-vcam-mgr"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "rtspcam-core",
  "thiserror",
