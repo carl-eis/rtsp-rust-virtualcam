@@ -1,39 +1,39 @@
-//! Blocking pipe client, used by the virtual camera DLL inside the Frame Server service.
-//! No tokio, no background threads of its own: the caller owns the reading thread.
+//! Blocking client, used by the camera side (on Windows the virtual camera DLL inside the
+//! Frame Server service). No tokio, no background threads of its own: the caller owns the
+//! reading thread.
 
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, Read, Write};
+use std::path::Path;
 
-use uuid::Uuid;
-
-use crate::frame_pipe_name;
 use crate::protocol::{Message, ProtocolError, VideoFormat, read_message, write_message};
 
-/// `ERROR_PIPE_BUSY`: every pipe instance is in use; try again shortly.
-pub const ERROR_PIPE_BUSY: i32 = 231;
-/// `ERROR_FILE_NOT_FOUND`: no such pipe, i.e. the app isn't running (or has no such camera).
-pub const ERROR_FILE_NOT_FOUND: i32 = 2;
-
-/// A connection to the app's pipe for one camera.
+/// A connection to the app for one camera, over any byte stream.
 #[derive(Debug)]
-pub struct FrameClient {
-    pipe: File,
+pub struct FrameClient<S = File> {
+    stream: S,
     buf: Vec<u8>,
 }
 
-impl FrameClient {
-    /// Opens the camera's pipe and asks for frames in `format`.
-    pub fn connect(camera_id: Uuid, format: VideoFormat) -> io::Result<Self> {
-        let pipe = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(frame_pipe_name(camera_id))?;
+impl FrameClient<File> {
+    /// Opens an endpoint that is reached through the file system, such as a Windows named
+    /// pipe (`\.\pipe\rtspcam\<id>`, see [`frame_pipe_name`](crate::frame_pipe_name)), and asks
+    /// for frames in `format`.
+    pub fn open(path: impl AsRef<Path>, format: VideoFormat) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        Self::new(file, format)
+    }
+}
+
+impl<S: Read + Write> FrameClient<S> {
+    /// Starts a session on a connected `stream`: asks for frames in `format`.
+    pub fn new(stream: S, format: VideoFormat) -> io::Result<Self> {
         let mut client = Self {
-            pipe,
+            stream,
             buf: Vec::new(),
         };
         write_message(
-            &mut client.pipe,
+            &mut client.stream,
             &Message::Hello {
                 pid: std::process::id(),
                 format,
@@ -44,16 +44,16 @@ impl FrameClient {
 
     /// Tells the app the consumer switched formats.
     pub fn set_format(&mut self, format: VideoFormat) -> io::Result<()> {
-        write_message(&mut self.pipe, &Message::SetFormat(format))
+        write_message(&mut self.stream, &Message::SetFormat(format))
     }
 
     /// Blocks until the next message. Frame data borrows an internal buffer.
     pub fn read(&mut self) -> Result<Message<'_>, ProtocolError> {
-        read_message(&mut self.pipe, &mut self.buf)
+        read_message(&mut self.stream, &mut self.buf)
     }
 
     /// Says goodbye; errors are ignored since the connection is ending anyway.
     pub fn close(mut self) {
-        let _ = write_message(&mut self.pipe, &Message::Goodbye);
+        let _ = write_message(&mut self.stream, &Message::Goodbye);
     }
 }

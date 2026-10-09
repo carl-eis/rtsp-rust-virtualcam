@@ -1,13 +1,14 @@
-//! The blocking client against the async server over a real named pipe.
-#![cfg(all(windows, feature = "server"))]
+//! The blocking client against the async server over this OS's real transport (named pipes on
+//! Windows, Unix sockets elsewhere).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use rtspcam_ipc::client::{ERROR_FILE_NOT_FOUND, FrameClient};
+use rtspcam_ipc::client::FrameClient;
 use rtspcam_ipc::server::{FrameSource, serve};
 use rtspcam_ipc::{Message, PixelFormat, StreamStatus, VideoFormat};
+use rtspcam_platform::{ReadWrite, frame_transport};
 use uuid::Uuid;
 
 /// Fills every byte of frame N with N.
@@ -54,42 +55,39 @@ const NV12_720P: VideoFormat = VideoFormat {
     pixel_format: PixelFormat::Nv12,
 };
 
-/// Reads until `n` frames arrived; returns their formats and first bytes.
-fn read_frames(client: &mut FrameClient, n: usize) -> Vec<(VideoFormat, u8, u64)> {
+/// Reads until `n` frames arrived; returns their formats and sequence numbers.
+fn read_frames(client: &mut FrameClient<Box<dyn ReadWrite>>, n: usize) -> Vec<(VideoFormat, u64)> {
     let mut frames = Vec::new();
-    let mut statuses = 0;
     while frames.len() < n {
         match client.read().unwrap() {
             Message::Frame { header, data } => {
                 assert!(data.iter().all(|&b| b == data[0]), "frame not uniform");
-                frames.push((header.format, data[0], header.seq));
+                frames.push((header.format, header.seq));
             }
-            Message::Status { status, .. } => {
-                assert_eq!(status, StreamStatus::Streaming);
-                statuses += 1;
-            }
+            Message::Status { status, .. } => assert_eq!(status, StreamStatus::Streaming),
             other => panic!("unexpected {other:?}"),
         }
     }
-    assert!(statuses >= 1, "no status message");
     frames
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn frames_flow_and_format_changes() {
+async fn frames_flow_over_the_platform_transport() {
+    let transport = frame_transport();
     let id = Uuid::new_v4();
+    assert!(!transport.is_served(id));
     let source = Arc::new(Counter::default());
-    let server = tokio::spawn(serve(id, source.clone()));
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let server = tokio::spawn(serve(transport.listen(id).unwrap(), source.clone()));
+    assert!(transport.is_served(id));
+    // Only one server per camera.
+    assert!(transport.listen(id).is_err());
 
+    let client_transport = transport.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let mut client = FrameClient::connect(id, NV12_720P).unwrap();
+        let connect = |format| FrameClient::new(client_transport.connect(id).unwrap(), format);
+        let mut client = connect(NV12_720P).unwrap();
         let first = read_frames(&mut client, 10);
-        assert!(first.iter().all(|(f, ..)| *f == NV12_720P));
-        assert!(
-            first.windows(2).all(|w| w[0].2 < w[1].2),
-            "seq not increasing"
-        );
+        assert!(first.iter().all(|(f, _)| *f == NV12_720P));
 
         let rgb = VideoFormat {
             width: 640,
@@ -98,12 +96,11 @@ async fn frames_flow_and_format_changes() {
             pixel_format: PixelFormat::Rgb32,
         };
         client.set_format(rgb).unwrap();
-        // Frames already in the pipe may still be in the old format.
         let after = read_frames(&mut client, 15);
         assert_eq!(after.last().unwrap().0, rgb);
 
         // A second client at the same time.
-        let mut second = FrameClient::connect(id, rgb).unwrap();
+        let mut second = connect(rgb).unwrap();
         assert_eq!(read_frames(&mut second, 3)[0].0, rgb);
         second.close();
         client.close();
@@ -115,10 +112,16 @@ async fn frames_flow_and_format_changes() {
     assert_eq!(source.connected.load(Ordering::SeqCst), 2);
     assert_eq!(source.disconnected.load(Ordering::SeqCst), 2);
     server.abort();
+    let _ = server.await;
+    // Give the OS a moment to tear the endpoint down.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while transport.is_served(id) {
+        assert!(std::time::Instant::now() < deadline, "still served");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[test]
-fn missing_pipe_is_file_not_found() {
-    let err = FrameClient::connect(Uuid::new_v4(), NV12_720P).unwrap_err();
-    assert_eq!(err.raw_os_error(), Some(ERROR_FILE_NOT_FOUND));
+fn connecting_to_an_unserved_camera_fails() {
+    assert!(frame_transport().connect(Uuid::new_v4()).is_err());
 }

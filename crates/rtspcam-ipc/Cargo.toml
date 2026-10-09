@@ -1,14 +1,14 @@
 [package]
 name = "rtspcam-ipc"
-description = "Frame and control protocol between the RTSP Cam app and the virtual camera DLL"
+description = "Frame and control protocol between the RTSP Cam app and a virtual camera"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [features]
-# The async pipe server used by the app. The DLL uses only the protocol and the blocking client.
-server = ["dep:tokio", "dep:tracing", "dep:windows"]
+# The async server used by the app. The DLL uses only the protocol and the blocking client.
+server = ["dep:tokio", "dep:tracing"]
 
 [dependencies]
 rtspcam-core.workspace = true
@@ -16,13 +16,6 @@ thiserror.workspace = true
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 tracing = { workspace = true, optional = true }
 uuid.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, optional = true, features = [
-    "Win32_Foundation",
-    "Win32_Security",
-    "Win32_Security_Authorization",
-] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util"] }

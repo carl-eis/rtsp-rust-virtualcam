@@ -1,0 +1,48 @@
+[package]
+name = "rtspcam-platform"
+description = "RTSP Cam's native boundary: OS-specific services behind small traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+rtspcam-core.workspace = true
+rtspcam-ipc = { workspace = true, features = ["server"] }
+# No default features: building this crate alone (for example `cargo check` for another OS)
+# shouldn't need the OpenH264 C++ build. The app turns the defaults on.
+rtspcam-pipeline = { workspace = true, default-features = false }
+tokio = { workspace = true, features = ["io-util"] }
+tracing.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+rtspcam-vcam-mgr.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+] }
+windows-core.workspace = true
+
+[dev-dependencies]
+openh264.workspace = true
+serde_json.workspace = true
+rtspcam-pipeline.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

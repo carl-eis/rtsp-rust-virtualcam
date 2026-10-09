@@ -27,10 +27,9 @@ use windows::Win32::System::Com::{
 };
 use windows_core::GUID;
 
-use super::{ArrivalLog, Decoder, stamp};
-use crate::error::{ErrorKind, PipelineError};
-use crate::frame::{Chroma, Yuv420Planes, yuy2_to_frame};
-use crate::{EncodedFrame, Frame, VideoCodec};
+use rtspcam_pipeline::decode::{ArrivalLog, Decoder, PlatformDecoders, stamp};
+use rtspcam_pipeline::frame::{Chroma, Yuv420Planes, yuy2_to_frame};
+use rtspcam_pipeline::{EncodedFrame, ErrorKind, Frame, PipelineError, VideoCodec};
 
 /// Output pixel formats we can turn into NV12, best first.
 const OUTPUT_PREFERENCE: [GUID; 5] = [
@@ -40,6 +39,43 @@ const OUTPUT_PREFERENCE: [GUID; 5] = [
     MFVideoFormat_YV12,
     MFVideoFormat_YUY2,
 ];
+
+/// Media Foundation as the pipeline's platform decoders.
+#[derive(Debug, Default)]
+pub(crate) struct MfDecoders;
+
+impl PlatformDecoders for MfDecoders {
+    fn create(
+        &self,
+        codec: VideoCodec,
+        size: Option<(u32, u32)>,
+    ) -> Result<Box<dyn Decoder>, PipelineError> {
+        Ok(Box::new(MfDecoder::new(codec, size)?))
+    }
+
+    fn unavailable_hint(&self) -> Option<&'static str> {
+        Some(
+            "For H.265 install \"HEVC Video Extensions\" from the Microsoft Store, \
+             or switch the camera (or its sub stream) to H.264.",
+        )
+    }
+}
+
+/// A Media Foundation error as a pipeline error.
+fn mf(e: windows_core::Error) -> PipelineError {
+    PipelineError::new(ErrorKind::Decode, format!("Media Foundation: {e}"))
+}
+
+/// `.mf()?` turns a Media Foundation result into a pipeline result.
+trait OrMf<T> {
+    fn mf(self) -> Result<T, PipelineError>;
+}
+
+impl<T> OrMf<T> for windows_core::Result<T> {
+    fn mf(self) -> Result<T, PipelineError> {
+        self.map_err(mf)
+    }
+}
 
 /// Keeps COM and Media Foundation initialized on this thread for the decoder's lifetime.
 struct MfRuntime {
@@ -98,7 +134,7 @@ struct OutputFormat {
     visible: (u32, u32, u32, u32),
 }
 
-pub struct MfDecoder {
+pub(crate) struct MfDecoder {
     // Field order matters: COM objects must be released before Media Foundation shuts down.
     transform: IMFTransform,
     name: String,
@@ -120,7 +156,7 @@ impl std::fmt::Debug for MfDecoder {
 }
 
 impl MfDecoder {
-    pub fn new(codec: VideoCodec, size: Option<(u32, u32)>) -> Result<Self, PipelineError> {
+    pub(crate) fn new(codec: VideoCodec, size: Option<(u32, u32)>) -> Result<Self, PipelineError> {
         let runtime = MfRuntime::start()?;
         let subtype = match codec {
             VideoCodec::H264 => MFVideoFormat_H264,
@@ -146,12 +182,16 @@ impl MfDecoder {
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
             }
 
-            let input = MFCreateMediaType()?;
-            input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            input.SetGUID(&MF_MT_SUBTYPE, &subtype)?;
-            input.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
+            let input = MFCreateMediaType().mf()?;
+            input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).mf()?;
+            input.SetGUID(&MF_MT_SUBTYPE, &subtype).mf()?;
+            input
+                .SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)
+                .mf()?;
             if let Some((w, h)) = size {
-                input.SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(w) << 32) | u64::from(h))?;
+                input
+                    .SetUINT64(&MF_MT_FRAME_SIZE, (u64::from(w) << 32) | u64::from(h))
+                    .mf()?;
             }
             transform.SetInputType(0, &input, 0).map_err(|e| {
                 PipelineError::new(
@@ -174,16 +214,18 @@ impl MfDecoder {
         match decoder.negotiate_output() {
             Ok(()) => {}
             Err(e) if e.code() == MF_E_TRANSFORM_TYPE_NOT_SET => {}
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(mf(e)),
         }
         // SAFETY: valid transform; these notifications have no parameters.
         unsafe {
             decoder
                 .transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)
+                .mf()?;
             decoder
                 .transform
-                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
+                .ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)
+                .mf()?;
         }
         Ok(decoder)
     }
@@ -243,7 +285,7 @@ impl MfDecoder {
                     Ok(()) => {}
                     // Not enough input yet to know the format.
                     Err(e) if e.code() == MF_E_TRANSFORM_TYPE_NOT_SET => return Ok(()),
-                    Err(e) => return Err(e.into()),
+                    Err(e) => return Err(mf(e)),
                 }
             }
             let provided = if self.mft_provides_samples {
@@ -283,9 +325,9 @@ impl MfDecoder {
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
                 Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
                     self.output = None;
-                    self.negotiate_output()?;
+                    self.negotiate_output().mf()?;
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(mf(e)),
             }
         }
     }
@@ -301,13 +343,13 @@ impl MfDecoder {
             let pts = sample.GetSampleTime().map_or(Duration::ZERO, |t| {
                 Duration::from_nanos(t.max(0) as u64 * 100)
             });
-            let buffer = sample.ConvertToContiguousBuffer()?;
+            let buffer = sample.ConvertToContiguousBuffer().mf()?;
             let mut ptr = std::ptr::null_mut();
             let mut len = 0u32;
-            buffer.Lock(&mut ptr, None, Some(&mut len))?;
+            buffer.Lock(&mut ptr, None, Some(&mut len)).mf()?;
             let data = std::slice::from_raw_parts(ptr, len as usize);
             let frame = picture_to_frame(data, fmt);
-            buffer.Unlock()?;
+            buffer.Unlock().mf()?;
             Ok(frame.map(|f| stamp(f, pts, &self.arrivals)))
         }
     }
@@ -325,15 +367,17 @@ impl Decoder for MfDecoder {
         let sample = unsafe {
             let len = u32::try_from(frame.data.len())
                 .map_err(|_| PipelineError::new(ErrorKind::Decode, "frame too large"))?;
-            let buffer = MFCreateMemoryBuffer(len.max(1))?;
+            let buffer = MFCreateMemoryBuffer(len.max(1)).mf()?;
             let mut ptr = std::ptr::null_mut();
-            buffer.Lock(&mut ptr, None, None)?;
+            buffer.Lock(&mut ptr, None, None).mf()?;
             std::ptr::copy_nonoverlapping(frame.data.as_ptr(), ptr, frame.data.len());
-            buffer.Unlock()?;
-            buffer.SetCurrentLength(len)?;
-            let sample = MFCreateSample()?;
-            sample.AddBuffer(&buffer)?;
-            sample.SetSampleTime(i64::try_from(frame.pts.as_nanos() / 100).unwrap_or(i64::MAX))?;
+            buffer.Unlock().mf()?;
+            buffer.SetCurrentLength(len).mf()?;
+            let sample = MFCreateSample().mf()?;
+            sample.AddBuffer(&buffer).mf()?;
+            sample
+                .SetSampleTime(i64::try_from(frame.pts.as_nanos() / 100).unwrap_or(i64::MAX))
+                .mf()?;
             sample
         };
         // A decoder that is full must be drained before it takes more input.

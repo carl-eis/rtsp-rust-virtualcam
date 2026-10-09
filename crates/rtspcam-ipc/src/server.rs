@@ -1,37 +1,40 @@
-//! Async pipe server, used by the app (and the CLI's test pattern camera). One server per
-//! camera; each connected client gets frames in the format it asked for, paced at its fps.
+//! Async server, used by the app (and the CLI's test pattern camera). One server per camera;
+//! each connected client gets frames in the format it asked for, paced at its fps.
+//!
+//! The server doesn't know how clients reach it: it accepts them from a [`FrameListener`]
+//! (`rtspcam-platform` has one for Windows named pipes and one for Unix sockets).
 
+use std::future::Future;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _};
-use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
-use uuid::Uuid;
 
-use crate::frame_pipe_name;
 use crate::protocol::{
-    FrameHeader, HEADER_LEN, Message, ProtocolError, StreamStatus, VideoFormat, encode,
-    frame_prefix, parse_body, parse_header,
+    FrameHeader, HEADER_LEN, Message, ProtocolError, VideoFormat, encode, frame_prefix, parse_body,
+    parse_header,
 };
+pub use crate::source::FrameSource;
 
-/// Where a camera's frames come from. Implemented by the app's camera manager.
-pub trait FrameSource: Send + Sync + 'static {
-    /// A consumer started using the camera (called once per connection).
-    fn client_connected(&self, _format: VideoFormat) {}
+/// A connected client: any async byte stream.
+pub trait Connection: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
 
-    /// That consumer went away.
-    fn client_disconnected(&self) {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> Connection for T {}
 
-    /// Writes the newest picture, converted to `format`, into `out` if it is newer than
-    /// `after`, and returns its sequence number. `None` means nothing new.
-    fn next_frame(&self, format: VideoFormat, after: Option<u64>, out: &mut Vec<u8>)
-    -> Option<u64>;
+/// A boxed [`Connection`].
+pub type BoxedConnection = Box<dyn Connection>;
 
-    /// Current state, shown by the camera when there are no frames.
-    fn status(&self) -> (StreamStatus, String);
+/// What [`FrameListener::accept`] returns.
+pub type Accept<'a> = Pin<Box<dyn Future<Output = io::Result<BoxedConnection>> + Send + 'a>>;
+
+/// Hands out the clients of one camera's endpoint.
+pub trait FrameListener: Send + 'static {
+    /// Waits for the next client. An error ends [`serve`].
+    fn accept(&mut self) -> Accept<'_>;
 }
 
 /// How long a client gets to send its `Hello`.
@@ -39,63 +42,51 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Status is re-sent this often even if unchanged, as a heartbeat.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Accepts camera clients on `\\.\pipe\rtspcam\<camera_id>` until the task is dropped.
-pub async fn serve(camera_id: Uuid, source: Arc<dyn FrameSource>) -> io::Result<()> {
-    let name = frame_pipe_name(camera_id);
-    let mut server = create_instance(&name, true)?;
-    // Dropping this (when the server task is aborted) also ends every connected client.
+/// Serves `source` to every client `listener` accepts, until the task is dropped (which also
+/// ends every connected client) or accepting fails.
+pub async fn serve(
+    mut listener: Box<dyn FrameListener>,
+    source: Arc<dyn FrameSource>,
+) -> io::Result<()> {
     let mut clients = JoinSet::new();
     loop {
-        server.connect().await?;
-        let connected = server;
-        // Create the next instance before serving, so new clients never see "no pipe".
-        server = create_instance(&name, false)?;
+        let connection = listener.accept().await?;
         let source = source.clone();
         while clients.try_join_next().is_some() {}
         clients.spawn(async move {
-            if let Err(e) = serve_client(connected, source).await {
-                tracing::debug!(%camera_id, error = %e, "camera client ended");
+            if let Err(e) = serve_client(connection, source).await {
+                tracing::debug!(error = %e, "camera client ended");
             }
         });
     }
 }
 
-fn create_instance(name: &str, first: bool) -> io::Result<NamedPipeServer> {
-    let mut opts = ServerOptions::new();
-    opts.first_pipe_instance(first)
-        .reject_remote_clients(true)
-        .out_buffer_size(1 << 20);
-    let security = security::PipeSecurity::new()?;
-    // SAFETY: `security` holds a valid SECURITY_ATTRIBUTES (and its descriptor) for the
-    // duration of this call; the pipe copies what it needs.
-    unsafe { opts.create_with_security_attributes_raw(name, security.as_ptr()) }
-}
-
 async fn serve_client(
-    mut pipe: NamedPipeServer,
+    mut connection: BoxedConnection,
     source: Arc<dyn FrameSource>,
 ) -> Result<(), ProtocolError> {
     let mut buf = Vec::new();
-    let (pid, format) = match tokio::time::timeout(HELLO_TIMEOUT, read(&mut pipe, &mut buf)).await {
-        Ok(Ok(Owned::Hello { pid, format })) => (pid, format),
-        Ok(Ok(_)) => return Err(ProtocolError::Invalid("expected Hello".into())),
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Err(ProtocolError::Invalid("no Hello in time".into())),
-    };
+    let (pid, format) =
+        match tokio::time::timeout(HELLO_TIMEOUT, read(&mut connection, &mut buf)).await {
+            Ok(Ok(Owned::Hello { pid, format })) => (pid, format),
+            Ok(Ok(_)) => return Err(ProtocolError::Invalid("expected Hello".into())),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err(ProtocolError::Invalid("no Hello in time".into())),
+        };
     tracing::info!(pid, %format, "camera client connected");
     source.client_connected(format);
-    let result = stream_to(pipe, format, &*source).await;
+    let result = stream_to(connection, format, &*source).await;
     source.client_disconnected();
     tracing::info!(pid, "camera client disconnected");
     result
 }
 
 async fn stream_to(
-    pipe: NamedPipeServer,
+    connection: BoxedConnection,
     format: VideoFormat,
     source: &dyn FrameSource,
 ) -> Result<(), ProtocolError> {
-    let (mut rd, wr) = tokio::io::split(pipe);
+    let (mut rd, wr) = tokio::io::split(connection);
     let (format_tx, format_rx) = watch::channel(format);
     // Control messages from the client arrive independently of frames going out.
     let reader = async move {
@@ -118,7 +109,7 @@ async fn stream_to(
 }
 
 async fn write_frames(
-    mut wr: tokio::io::WriteHalf<NamedPipeServer>,
+    mut wr: tokio::io::WriteHalf<BoxedConnection>,
     mut format_rx: watch::Receiver<VideoFormat>,
     source: &dyn FrameSource,
 ) -> Result<(), ProtocolError> {
@@ -192,66 +183,4 @@ async fn read<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Result<Owne
         Message::Goodbye => Owned::Goodbye,
         _ => Owned::Other,
     })
-}
-
-mod security {
-    //! The pipe's DACL: the Frame Server runs as LOCAL SERVICE and Frame Server Monitor as
-    //! SYSTEM, while the app runs as the signed-in user, so all three need access.
-
-    use std::ffi::c_void;
-    use std::io;
-
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
-    use windows::core::w;
-
-    /// SYSTEM, LOCAL SERVICE and the pipe's owner (the user running the app): full access.
-    /// Protected, so nothing is inherited.
-    const SDDL: windows::core::PCWSTR = w!("D:P(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;OW)");
-
-    pub(super) struct PipeSecurity {
-        descriptor: PSECURITY_DESCRIPTOR,
-        attributes: SECURITY_ATTRIBUTES,
-    }
-
-    impl PipeSecurity {
-        pub(super) fn new() -> io::Result<Self> {
-            let mut descriptor = PSECURITY_DESCRIPTOR::default();
-            // SAFETY: valid SDDL string; on success the descriptor is LocalAlloc'ed and freed
-            // in Drop.
-            unsafe {
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    SDDL,
-                    SDDL_REVISION_1,
-                    &mut descriptor,
-                    None,
-                )
-            }
-            .map_err(io::Error::other)?;
-            Ok(Self {
-                descriptor,
-                attributes: SECURITY_ATTRIBUTES {
-                    nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-                    lpSecurityDescriptor: descriptor.0,
-                    bInheritHandle: false.into(),
-                },
-            })
-        }
-
-        pub(super) fn as_ptr(&self) -> *mut c_void {
-            (&raw const self.attributes).cast_mut().cast()
-        }
-    }
-
-    impl Drop for PipeSecurity {
-        fn drop(&mut self) {
-            // SAFETY: allocated by ConvertStringSecurityDescriptorToSecurityDescriptorW.
-            unsafe {
-                LocalFree(Some(HLOCAL(self.descriptor.0)));
-            }
-        }
-    }
 }

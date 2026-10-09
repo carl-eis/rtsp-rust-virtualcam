@@ -1,11 +1,12 @@
-//! The camera manager: one pipeline, one pipe server and one virtual camera per enabled stream,
-//! kept in step with the configuration.
+//! The camera manager: one pipeline and one virtual camera per enabled stream, kept in step with
+//! the configuration.
 //!
 //! ```text
 //!  Config ──apply──► reconciler task ──► per camera:
-//!                                          ├─ pipe server   (serves the DLL; counts consumers)
 //!                                          ├─ supervisor    (starts/stops the RTSP pipeline)
-//!                                          └─ virtual camera (via the CameraBackend)
+//!                                          └─ virtual camera (via the VirtualCameraBackend,
+//!                                                             which gets the camera's frames
+//!                                                             and counts its consumers)
 //! ```
 //!
 //! [`CameraManager::apply`] never blocks: it hands the new configuration to a task that works
@@ -23,18 +24,17 @@ use std::time::Duration;
 
 use rtspcam_core::config::{OnDisconnect, Picture, StreamConfig};
 use rtspcam_core::{Config, FitMode};
-use rtspcam_ipc::server::serve;
 use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
     Frame, FrameBus, Pipeline, PipelineError, PipelineOptions, SourceOptions, StreamState,
 };
+use rtspcam_platform::{CameraError, CameraSpec, VirtualCameraBackend};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::backend::CameraBackend;
 use crate::overlay::{Overlay, local_time_text};
 use crate::source::CameraSource;
 use crate::status::{Activity, CameraStatus, VcamState};
@@ -221,19 +221,15 @@ impl CameraShared {
         }
     }
 
-    fn set_vcam(&self, state: VcamState) {
-        *self.vcam.lock().unwrap_or_else(PoisonError::into_inner) = state;
-        (self.notify)();
-    }
-
     /// Records the outcome of creating the camera, unless something already went wrong.
-    fn vcam_created(&self, result: Result<(), String>) {
+    fn vcam_created(&self, result: Result<(), CameraError>) {
         {
             let mut vcam = self.vcam.lock().unwrap_or_else(PoisonError::into_inner);
             if *vcam == VcamState::Pending {
                 *vcam = match result {
                     Ok(()) => VcamState::Ready,
-                    Err(e) => VcamState::Failed(e),
+                    Err(CameraError::Unsupported(why)) => VcamState::Unsupported(why),
+                    Err(CameraError::Failed(why)) => VcamState::Failed(why),
                 };
             }
         }
@@ -299,14 +295,13 @@ impl Drop for Preview {
 struct Camera {
     config: StreamConfig,
     state: Arc<CameraShared>,
-    server: JoinHandle<()>,
     supervisor: JoinHandle<()>,
 }
 
 struct Shared {
     cameras: Mutex<HashMap<Uuid, Camera>>,
     paused: watch::Sender<bool>,
-    backend: Arc<dyn CameraBackend>,
+    backend: Arc<dyn VirtualCameraBackend>,
     options: ManagerOptions,
     handle: Handle,
 }
@@ -327,7 +322,10 @@ impl std::fmt::Debug for CameraManager {
 
 impl CameraManager {
     /// Starts the manager with no cameras; call [`apply`](Self::apply) to give it the config.
-    pub fn start(backend: Arc<dyn CameraBackend>, options: ManagerOptions) -> io::Result<Self> {
+    pub fn start(
+        backend: Arc<dyn VirtualCameraBackend>,
+        options: ManagerOptions,
+    ) -> io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("rtspcam")
@@ -407,8 +405,9 @@ impl CameraManager {
 
     /// Shuts everything down in order and waits for it:
     ///
-    /// 1. stop configuration changes and the pipe servers (no new consumers),
-    /// 2. remove every virtual camera (they disappear from Discord and the like),
+    /// 1. stop configuration changes,
+    /// 2. stop frame delivery (no new consumers) and remove every virtual camera (they
+    ///    disappear from Discord and the like),
     /// 3. stop the RTSP pipelines and join their decode threads,
     /// 4. stop the async runtime.
     ///
@@ -441,7 +440,6 @@ impl CameraManager {
             .map(|(_, c)| c)
             .collect();
         for c in &cameras {
-            c.server.abort();
             c.supervisor.abort();
         }
         self.shared.backend.remove_all();
@@ -508,7 +506,6 @@ async fn reconcile(shared: &Arc<Shared>, config: &Config) {
 }
 
 async fn remove_camera(shared: &Arc<Shared>, camera: Camera) {
-    camera.server.abort();
     camera.supervisor.abort();
     camera.state.set_bus(None);
     if let Some(pipeline) = camera.state.take_pipeline() {
@@ -523,20 +520,6 @@ async fn remove_camera(shared: &Arc<Shared>, camera: Camera) {
 async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
     tracing::info!(id = %config.id, name = %config.name, url = %config.url(), "adding camera");
     let state = Arc::new(CameraShared::new(config, shared.options.on_change.clone()));
-
-    let source = Arc::new(CameraSource::new(state.clone()));
-    let server = {
-        let state = state.clone();
-        let id = config.id;
-        shared.handle.spawn(async move {
-            if let Err(e) = serve(id, source).await {
-                tracing::error!(%id, error = %e, "the camera's pipe stopped");
-                state.set_vcam(VcamState::Failed(format!(
-                    "could not serve the camera's pipe ({e}); is another copy of RTSP Cam running?"
-                )));
-            }
-        })
-    };
 
     let supervisor = shared.handle.spawn(supervise(
         state.clone(),
@@ -555,21 +538,30 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
             Camera {
                 config: config.clone(),
                 state: state.clone(),
-                server,
                 supervisor,
             },
         );
     (shared.options.on_change)();
 
-    // Creating the camera is the slow part; the pipe is already being served.
+    // Creating the camera is the slow part; the backend gets the camera's frames with it.
     let backend = shared.backend.clone();
-    let (name, id) = (config.name.clone(), config.id);
-    let preferred = (config.output.width, config.output.height, config.output.fps);
-    let result = tokio::task::spawn_blocking(move || backend.create(&name, id, preferred))
+    let frames = Arc::new(CameraSource::new(state.clone()));
+    let spec = CameraSpec {
+        id: config.id,
+        name: config.name.clone(),
+        preferred: (config.output.width, config.output.height, config.output.fps),
+    };
+    let id = spec.id;
+    let runtime = shared.handle.clone();
+    let result = tokio::task::spawn_blocking(move || backend.create(&spec, frames, &runtime))
         .await
-        .unwrap_or_else(|e| Err(e.to_string()));
-    if let Err(e) = &result {
-        tracing::error!(%id, error = %e, "could not create the virtual camera");
+        .unwrap_or_else(|e| Err(CameraError::Failed(e.to_string())));
+    match &result {
+        Ok(()) => {}
+        Err(CameraError::Unsupported(why)) => tracing::info!(%id, "{why}"),
+        Err(CameraError::Failed(why)) => {
+            tracing::error!(%id, error = %why, "could not create the virtual camera");
+        }
     }
     state.vcam_created(result);
 }

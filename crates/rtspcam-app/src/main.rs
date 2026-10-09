@@ -11,14 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use rtspcam_app::backend::VcamBackend;
-use rtspcam_app::single_instance::{self, Instance};
 use rtspcam_app::{CameraManager, ManagerOptions, ui};
 use rtspcam_core::config::ConfigStore;
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::logging::{self, LogOptions};
 use rtspcam_core::paths;
-use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use rtspcam_platform::{CameraError, Instance};
 use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
 use windows::core::HSTRING;
 
@@ -27,10 +25,7 @@ const SHUTDOWN_LIMIT: Duration = Duration::from_secs(3);
 
 fn main() -> ExitCode {
     // Started from a terminal, a windowed build can still be stopped with Ctrl+C.
-    // SAFETY: fails harmlessly when there is no parent console.
-    unsafe {
-        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
-    }
+    rtspcam_platform::desktop::attach_parent_console();
     match run() {
         Ok(code) => code,
         Err(e) => {
@@ -56,18 +51,25 @@ fn run() -> anyhow::Result<ExitCode> {
     let has = |flag: &str| args.iter().any(|a| a == flag);
     let (headless, minimized) = (has("--headless"), has("--minimized"));
 
-    if !rtspcam_vcam_mgr::is_supported() {
-        anyhow::bail!(
-            "{APP_DISPLAY_NAME} requires Windows 11 (virtual cameras are not available)."
-        );
+    // The secret store (for the passwords in the config) and the OS's video decoders.
+    rtspcam_platform::install();
+
+    let backend = rtspcam_platform::camera_backend();
+    match backend.check() {
+        Ok(()) | Err(CameraError::Unsupported(_)) => {}
+        // For example Windows 10: nothing this app does makes sense there.
+        Err(CameraError::Failed(why)) => anyhow::bail!("{why}"),
     }
 
-    let instance = match single_instance::acquire().context("single-instance check failed")? {
+    let instance = match rtspcam_platform::single_instance("RtspCam")
+        .acquire()
+        .context("single-instance check failed")?
+    {
         Instance::First(guard) => guard,
         Instance::AlreadyRunning => return Ok(ExitCode::SUCCESS),
     };
 
-    let store = ConfigStore::open_default()?;
+    let store = ConfigStore::open_default()?.with_replacer(rtspcam_platform::file_replacer());
     // Load before logging starts so the configured level applies from the first line.
     let loaded = store.load();
     let level = loaded
@@ -90,7 +92,10 @@ fn run() -> anyhow::Result<ExitCode> {
         tracing::warn!(%issue, "invalid stream configuration");
     }
 
-    let manager = CameraManager::start(Arc::new(VcamBackend::start()), ManagerOptions::default())?;
+    if let Err(CameraError::Unsupported(why)) = backend.check() {
+        tracing::info!("{why}; streams preview but don't become cameras");
+    }
+    let manager = CameraManager::start(backend, ManagerOptions::default())?;
     if headless {
         run_headless(&store, &config, manager)?;
         return Ok(ExitCode::SUCCESS);

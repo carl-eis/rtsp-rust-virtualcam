@@ -67,14 +67,17 @@ impl Activity {
     }
 }
 
-/// Whether the camera exists in Windows.
+/// Whether the virtual camera exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VcamState {
     /// Being created.
     Pending,
     /// Visible to Discord, the Camera app and so on.
     Ready,
-    /// Windows refused it; the message says why (not registered, access denied, ...).
+    /// This OS has no virtual camera support yet; the message says so. Not a problem: the
+    /// stream still previews.
+    Unsupported(String),
+    /// The OS refused it; the message says why (not registered, access denied, ...).
     Failed(String),
 }
 
@@ -92,7 +95,7 @@ pub struct CameraStatus {
 }
 
 impl CameraStatus {
-    /// A camera that exists in Windows, or is a stream with a problem the user should see.
+    /// Whether the stream or its camera has a problem the user should see.
     pub fn has_problem(&self) -> bool {
         self.activity.is_error() || matches!(self.vcam, VcamState::Failed(_))
     }

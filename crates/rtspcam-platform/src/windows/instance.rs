@@ -1,8 +1,10 @@
-//! One `rtspcam.exe` per Windows session.
+//! One copy per Windows session.
 //!
-//! The first copy holds a named mutex and listens on a named event. A second copy finds the
-//! mutex taken, signals the event (so the first brings its window forward) and exits.
+//! The first copy holds the named mutex `Local\<name>.SingleInstance` and listens on the named
+//! event `Local\<name>.Show`. A second copy finds the mutex taken, signals the event (so the
+//! first brings its window forward) and exits. The app uses the name `RtspCam`.
 
+use std::io;
 use std::thread::{self, JoinHandle};
 
 use windows::Win32::Foundation::{
@@ -12,54 +14,68 @@ use windows::Win32::System::Threading::{
     CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, SetEvent,
     WaitForMultipleObjects,
 };
-use windows::core::w;
+use windows::core::HSTRING;
+
+use crate::instance::{Instance, InstanceLock, SingleInstance};
+
+/// The single-instance check for one name.
+#[derive(Debug, Clone)]
+pub(crate) struct NamedMutex {
+    mutex: HSTRING,
+    show: HSTRING,
+}
+
+impl NamedMutex {
+    pub(crate) fn new(name: &str) -> Self {
+        Self {
+            mutex: HSTRING::from(format!(r"Local\{name}.SingleInstance")),
+            show: HSTRING::from(format!(r"Local\{name}.Show")),
+        }
+    }
+}
+
+impl SingleInstance for NamedMutex {
+    fn acquire(&self) -> io::Result<Instance> {
+        acquire(&self.mutex, &self.show).map_err(io::Error::other)
+    }
+}
 
 /// Held for the life of the process by the first instance.
 #[derive(Debug)]
-pub struct InstanceGuard {
+struct InstanceGuard {
     mutex: usize,
     show: usize,
     stop: usize,
     listener: Option<JoinHandle<()>>,
 }
 
-/// The outcome of [`acquire`].
-#[derive(Debug)]
-pub enum Instance {
-    /// This is the only copy.
-    First(InstanceGuard),
-    /// Another copy runs; it has been asked to show its window.
-    AlreadyRunning,
-}
-
 /// Claims the single-instance mutex, or tells the running copy to show itself.
-pub fn acquire() -> windows::core::Result<Instance> {
-    // SAFETY: plain kernel object creation with static names; handles are closed in Drop
+fn acquire(mutex_name: &HSTRING, show_name: &HSTRING) -> windows::core::Result<Instance> {
+    // SAFETY: plain kernel object creation with valid names; handles are closed in Drop
     // (or right here when another instance exists).
     unsafe {
-        let mutex = CreateMutexW(None, true, w!(r"Local\RtspCam.SingleInstance"))?;
+        let mutex = CreateMutexW(None, true, mutex_name)?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(mutex);
-            if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, w!(r"Local\RtspCam.Show")) {
+            if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, show_name) {
                 let _ = SetEvent(event);
                 let _ = CloseHandle(event);
             }
             return Ok(Instance::AlreadyRunning);
         }
-        let show = CreateEventW(None, false, false, w!(r"Local\RtspCam.Show"))?;
+        let show = CreateEventW(None, false, false, show_name)?;
         let stop = CreateEventW(None, true, false, None)?;
-        Ok(Instance::First(InstanceGuard {
+        Ok(Instance::First(Box::new(InstanceGuard {
             mutex: mutex.0 as usize,
             show: show.0 as usize,
             stop: stop.0 as usize,
             listener: None,
-        }))
+        })))
     }
 }
 
-impl InstanceGuard {
-    /// Calls `on_show` (on a background thread) each time a second copy is started.
-    pub fn on_show(&mut self, on_show: impl Fn() + Send + 'static) {
+impl InstanceLock for InstanceGuard {
+    fn on_show(&mut self, on_show: Box<dyn Fn() + Send>) {
         let (show, stop) = (self.show, self.stop);
         self.listener = Some(
             thread::Builder::new()
@@ -94,5 +110,17 @@ impl Drop for InstanceGuard {
                 let _ = CloseHandle(HANDLE(h as *mut _));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_app_name_gives_the_same_kernel_object_names_as_before() {
+        let names = NamedMutex::new("RtspCam");
+        assert_eq!(names.mutex, r"Local\RtspCam.SingleInstance");
+        assert_eq!(names.show, r"Local\RtspCam.Show");
     }
 }

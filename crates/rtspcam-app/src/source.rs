@@ -1,10 +1,10 @@
-//! Serves a camera's pictures to the media source DLL, scaled and converted to whatever the
-//! consumer (Discord, the Camera app, ...) asked for.
+//! A camera's pictures for its virtual camera backend (on Windows, served to the media source
+//! DLL), scaled and converted to whatever the consumer (Discord, the Camera app, ...) asked for.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rtspcam_ipc::server::FrameSource;
+use rtspcam_ipc::FrameSource;
 use rtspcam_ipc::{PixelFormat, StreamStatus, VideoFormat};
 use rtspcam_pipeline::scale::nv12_to_bgra;
 use rtspcam_pipeline::{Frame, Matrix, Scaler};

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -6,6 +7,28 @@ use std::sync::{Arc, Mutex, PoisonError};
 use super::Config;
 use super::migrate::{CURRENT_VERSION, migrate};
 use crate::error::ConfigError;
+
+/// Puts a newly written file in place of an existing one, keeping the old one as a backup.
+///
+/// [`CopyThenRename`] works everywhere. `rtspcam-platform` has the Windows version
+/// (`ReplaceFileW`, which keeps the file's ACL and attributes); pass it with
+/// [`ConfigStore::with_replacer`].
+pub trait FileReplace: Send + Sync + fmt::Debug {
+    /// Moves `tmp` over the existing `target`, keeping the old `target` as `backup`.
+    fn replace(&self, tmp: &Path, target: &Path, backup: &Path) -> io::Result<()>;
+}
+
+/// Copies `target` to `backup`, then renames `tmp` over `target`. The rename is atomic on one
+/// file system, so `target` is never missing or half-written.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CopyThenRename;
+
+impl FileReplace for CopyThenRename {
+    fn replace(&self, tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
+        fs::copy(target, backup)?;
+        fs::rename(tmp, target)
+    }
+}
 
 /// Reads and writes `config.json`.
 ///
@@ -18,10 +41,11 @@ use crate::error::ConfigError;
 pub struct ConfigStore {
     path: PathBuf,
     pub(super) last_seen: Arc<Mutex<Option<Vec<u8>>>>,
+    replacer: Arc<dyn FileReplace>,
 }
 
 impl ConfigStore {
-    /// A store for `%APPDATA%\RtspCam\config.json`.
+    /// A store for the user's `config.json` (see [`crate::paths::config_file`]).
     pub fn open_default() -> Result<Self, ConfigError> {
         Ok(Self::new(crate::paths::config_file()?))
     }
@@ -30,7 +54,15 @@ impl ConfigStore {
         Self {
             path: path.into(),
             last_seen: Arc::default(),
+            replacer: Arc::new(CopyThenRename),
         }
+    }
+
+    /// Uses `replacer` to put saved files in place (the default is [`CopyThenRename`]).
+    #[must_use]
+    pub fn with_replacer(mut self, replacer: Arc<dyn FileReplace>) -> Self {
+        self.replacer = replacer;
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -83,12 +115,20 @@ impl ConfigStore {
         write_synced(&tmp, &bytes).map_err(|e| ConfigError::io(&tmp, e))?;
         // Record before the rename so a watcher that fires right away sees our own write.
         self.remember(&bytes);
-        if let Err(e) = replace(&tmp, &self.path, &self.backup_path()) {
+        if let Err(e) = self.replace(&tmp) {
             let _ = fs::remove_file(&tmp);
             return Err(ConfigError::io(&self.path, e));
         }
         tracing::debug!(path = %self.path.display(), "saved config");
         Ok(())
+    }
+
+    /// Moves `tmp` over `config.json`, keeping the old file as `config.json.bak`.
+    fn replace(&self, tmp: &Path) -> io::Result<()> {
+        if !self.path.exists() {
+            return fs::rename(tmp, &self.path);
+        }
+        self.replacer.replace(tmp, &self.path, &self.backup_path())
     }
 
     fn remember(&self, bytes: &[u8]) {
@@ -135,49 +175,6 @@ fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = fs::File::create(path)?;
     file.write_all(bytes)?;
     file.sync_all()
-}
-
-/// Moves `tmp` over `target`, keeping the old `target` as `backup`.
-fn replace(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
-    if !target.exists() {
-        return fs::rename(tmp, target);
-    }
-    #[cfg(windows)]
-    {
-        match replace_file(tmp, target, backup) {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                tracing::debug!(error = %e, "ReplaceFileW failed, falling back to copy + rename")
-            }
-        }
-    }
-    fs::copy(target, backup)?;
-    fs::rename(tmp, target)
-}
-
-#[cfg(windows)]
-fn replace_file(tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-
-    use windows::Win32::Storage::FileSystem::{REPLACEFILE_IGNORE_MERGE_ERRORS, ReplaceFileW};
-    use windows::core::PCWSTR;
-
-    fn wide(p: &Path) -> Vec<u16> {
-        p.as_os_str().encode_wide().chain(Some(0)).collect()
-    }
-    let (target, tmp, backup) = (wide(target), wide(tmp), wide(backup));
-    // SAFETY: all three are NUL-terminated UTF-16 strings that outlive the call.
-    unsafe {
-        ReplaceFileW(
-            PCWSTR(target.as_ptr()),
-            PCWSTR(tmp.as_ptr()),
-            PCWSTR(backup.as_ptr()),
-            REPLACEFILE_IGNORE_MERGE_ERRORS,
-            None,
-            None,
-        )
-    }
-    .map_err(|e| io::Error::from_raw_os_error(e.code().0))
 }
 
 #[cfg(test)]
@@ -246,5 +243,31 @@ mod tests {
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(store.path(), r#"{ "streams": [{ "port": "abc" }] }"#).unwrap();
         assert!(matches!(store.load(), Err(ConfigError::Parse { .. })));
+    }
+
+    /// Records each replacement, then does the default.
+    #[derive(Debug, Default)]
+    struct Recording(Mutex<Vec<PathBuf>>);
+
+    impl FileReplace for Recording {
+        fn replace(&self, tmp: &Path, target: &Path, backup: &Path) -> io::Result<()> {
+            self.0.lock().unwrap().push(target.to_owned());
+            CopyThenRename.replace(tmp, target, backup)
+        }
+    }
+
+    #[test]
+    fn an_existing_file_is_replaced_through_the_replacer() {
+        let (_dir, store) = store();
+        let recording = Arc::new(Recording::default());
+        let store = store.with_replacer(recording.clone());
+        store.save(&Config::default()).unwrap();
+        assert!(
+            recording.0.lock().unwrap().is_empty(),
+            "nothing to replace yet"
+        );
+        store.save(&Config::default()).unwrap();
+        assert_eq!(*recording.0.lock().unwrap(), [store.path().to_owned()]);
+        assert!(store.backup_path().exists());
     }
 }

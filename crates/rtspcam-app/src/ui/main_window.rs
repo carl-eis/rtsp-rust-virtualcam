@@ -573,6 +573,7 @@ impl MainWindow {
                             String::new()
                         }
                     )),
+                    VcamState::Unsupported(why) => lines.push(format!("{why}.")),
                     VcamState::Failed(why) => {
                         lines.push(format!("The camera could not be created: {why}"));
                     }
@@ -799,7 +800,7 @@ impl MainWindow {
             return;
         };
         if settings.start_with_windows != current.start_with_windows
-            && let Err(e) = crate::autostart::set(settings.start_with_windows)
+            && let Err(e) = rtspcam_platform::autostart().set(settings.start_with_windows)
         {
             let _ = self.wnd.hwnd().MessageBox(
                 &format!("Could not change the Windows startup entry: {e}"),
@@ -833,7 +834,7 @@ impl MainWindow {
     fn open_logs(&self) {
         if let Ok(dir) = rtspcam_core::paths::log_dir() {
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::process::Command::new("explorer.exe").arg(dir).spawn();
+            let _ = rtspcam_platform::desktop::open_folder(&dir);
         }
     }
 

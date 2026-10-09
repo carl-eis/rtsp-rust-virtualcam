@@ -109,7 +109,7 @@ impl std::fmt::Debug for Frame {
 /// Decoders hand out pictures with padding (for example 1920x1088 with a 1920x1080 visible area,
 /// or rows wider than the picture). `width` and `height` are rounded down to even values.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Yuv420Planes<'a> {
+pub struct Yuv420Planes<'a> {
     pub y: &'a [u8],
     pub y_stride: usize,
     pub chroma: Chroma<'a>,
@@ -118,7 +118,7 @@ pub(crate) struct Yuv420Planes<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Chroma<'a> {
+pub enum Chroma<'a> {
     /// NV12: interleaved U, V.
     Interleaved { uv: &'a [u8], stride: usize },
     /// I420 / YV12: separate U and V planes.
@@ -130,7 +130,7 @@ pub(crate) enum Chroma<'a> {
 }
 
 impl Yuv420Planes<'_> {
-    pub(crate) fn to_frame(self) -> Option<Frame> {
+    pub fn to_frame(self) -> Option<Frame> {
         let w = (self.width & !1) as usize;
         let h = (self.height & !1) as usize;
         if w == 0 || h == 0 {
@@ -164,7 +164,7 @@ impl Yuv420Planes<'_> {
 }
 
 /// Converts a packed YUY2 (YUYV 4:2:2) picture to NV12 by averaging chroma of row pairs.
-pub(crate) fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) -> Option<Frame> {
+pub fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) -> Option<Frame> {
     let w = (width & !1) as usize;
     let h = (height & !1) as usize;
     if w == 0 || h == 0 {

@@ -43,6 +43,7 @@ windows-core.workspace = true
 
 [dev-dependencies]
 rtspcam-ipc = { workspace = true, features = ["server"] }
+rtspcam-platform.workspace = true
 tokio.workspace = true
 
 [build-dependencies]

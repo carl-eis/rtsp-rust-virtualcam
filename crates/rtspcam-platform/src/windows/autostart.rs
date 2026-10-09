@@ -1,6 +1,7 @@
 //! "Start with Windows": a value in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 //! Per user, so no administrator rights are needed.
 
+use std::io;
 use std::path::Path;
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
@@ -10,32 +11,49 @@ use windows::Win32::System::Registry::{
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
+use crate::autostart::{Autostart, MINIMIZED_ARG};
+
 const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
-/// The value name used by the app.
-pub const VALUE_NAME: &str = "RtspCam";
-/// Argument the autostart entry passes, so the app starts hidden.
-pub const MINIMIZED_ARG: &str = "--minimized";
+/// The value name used by the app (the installer's autostart task writes the same one).
+pub(crate) const VALUE_NAME: &str = "RtspCam";
+
+/// The app's entry in the `Run` key.
+#[derive(Debug, Clone)]
+pub(crate) struct RunKey {
+    name: String,
+}
+
+impl Default for RunKey {
+    fn default() -> Self {
+        Self {
+            name: VALUE_NAME.to_owned(),
+        }
+    }
+}
+
+impl Autostart for RunKey {
+    fn label(&self) -> &'static str {
+        "Start with Windows"
+    }
+
+    fn is_enabled(&self) -> bool {
+        get_named(&self.name).is_some()
+    }
+
+    fn set(&self, enabled: bool) -> io::Result<()> {
+        let exe = std::env::current_exe()?;
+        set_named(&self.name, enabled.then(|| command_line(&exe)).as_deref())
+            .map_err(io::Error::other)
+    }
+}
 
 /// The command line stored in the registry for `exe`.
-pub fn command_line(exe: &Path) -> String {
+fn command_line(exe: &Path) -> String {
     format!("\"{}\" {MINIMIZED_ARG}", exe.display())
 }
 
-/// Adds or removes the app's autostart entry.
-pub fn set(enabled: bool) -> windows::core::Result<()> {
-    let exe = std::env::current_exe().map_err(|e| {
-        windows::core::Error::new(windows::Win32::Foundation::E_FAIL, e.to_string())
-    })?;
-    set_named(VALUE_NAME, enabled.then(|| command_line(&exe)).as_deref())
-}
-
-/// Whether the app's autostart entry exists.
-pub fn is_enabled() -> bool {
-    get_named(VALUE_NAME).is_some()
-}
-
 /// Sets (`Some`) or removes (`None`) the Run value `name`.
-pub fn set_named(name: &str, command: Option<&str>) -> windows::core::Result<()> {
+fn set_named(name: &str, command: Option<&str>) -> windows::core::Result<()> {
     let name = HSTRING::from(name);
     let mut key = HKEY::default();
     // SAFETY: a valid key path and output handle; the key is closed below.
@@ -69,7 +87,7 @@ pub fn set_named(name: &str, command: Option<&str>) -> windows::core::Result<()>
 }
 
 /// The command stored in the Run value `name`, if any.
-pub fn get_named(name: &str) -> Option<String> {
+fn get_named(name: &str) -> Option<String> {
     let name = HSTRING::from(name);
     let mut buf = vec![0u16; 1024];
     let mut size = (buf.len() * 2) as u32;
@@ -116,5 +134,19 @@ mod tests {
         assert_eq!(get_named(&name), None);
         // Removing twice is fine.
         set_named(&name, None).unwrap();
+    }
+
+    #[test]
+    fn the_trait_writes_this_exe() {
+        let entry = RunKey {
+            name: format!("RtspCamTrait{}", std::process::id()),
+        };
+        assert!(!entry.is_enabled());
+        entry.set(true).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(get_named(&entry.name), Some(command_line(&exe)));
+        assert!(entry.is_enabled());
+        entry.set(false).unwrap();
+        assert!(!entry.is_enabled());
     }
 }

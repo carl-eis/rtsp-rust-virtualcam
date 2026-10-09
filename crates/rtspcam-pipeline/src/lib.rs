@@ -1,9 +1,9 @@
-//! RTSP ingest (`retina`), decoding (Media Foundation / openh264), scaling and the per-camera
-//! latest-frame bus.
+//! RTSP ingest (`retina`), decoding (OpenH264, or the platform's own decoders), scaling and the
+//! per-camera latest-frame bus.
 //!
 //! - [`pipeline`]: a running stream: ingest, decode thread, reconnects and status.
 //! - [`source`]: connects to an RTSP server and yields encoded video frames.
-//! - [`decode`]: Media Foundation and OpenH264 decoders.
+//! - [`decode`]: the OpenH264 decoder and the hook for the platform's own decoders.
 //! - [`frame`]: decoded NV12 pictures.
 //! - [`bus`]: the per-camera "latest frame" channel between the decoder and its readers.
 //! - [`scale`]: NV12 scaling with the configured fit mode, and NV12 → BGRA for the preview.

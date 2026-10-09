@@ -6,7 +6,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use rtspcam_ipc::client::{ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, FrameClient};
+use rtspcam_ipc::client::FrameClient;
+use rtspcam_ipc::frame_pipe_name;
 use rtspcam_ipc::{Message, StreamStatus, VideoFormat};
 use uuid::Uuid;
 use windows::Win32::Foundation::HANDLE;
@@ -14,6 +15,11 @@ use windows::Win32::System::IO::CancelSynchronousIo;
 
 use crate::guard::ModuleRef;
 use crate::log::log;
+
+/// `ERROR_PIPE_BUSY`: every pipe instance is in use; try again shortly.
+const ERROR_PIPE_BUSY: i32 = 231;
+/// `ERROR_FILE_NOT_FOUND`: no such pipe, i.e. the app isn't running (or has no such camera).
+const ERROR_FILE_NOT_FOUND: i32 = 2;
 
 /// Why there is (or isn't) a picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +123,7 @@ fn set(shared: &Shared, f: impl FnOnce(&mut State)) {
 fn run(camera: Uuid, format: VideoFormat, shared: &Shared) {
     let mut last_error = None;
     while !shared.stop.load(Ordering::SeqCst) {
-        let retry_in = match FrameClient::connect(camera, format) {
+        let retry_in = match FrameClient::open(frame_pipe_name(camera), format) {
             Ok(mut client) => {
                 log!("camera {camera}: connected to the app for {format}");
                 last_error = None;

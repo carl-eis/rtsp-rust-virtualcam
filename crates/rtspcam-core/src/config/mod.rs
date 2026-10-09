@@ -1,8 +1,9 @@
 //! The JSON configuration model.
 //!
-//! The whole configuration is one JSON object stored at `%APPDATA%\RtspCam\config.json`
-//! (see [`ConfigStore`]). Every field has a default, so older or hand-written files load, and
-//! unknown fields are kept in `extra` and written back unchanged.
+//! The whole configuration is one JSON object stored in `config.json` in the user's config
+//! folder ([`crate::paths::config_file`], read and written by [`ConfigStore`]). Every field has a
+//! default, so older or hand-written files load, and unknown fields are kept in `extra` and
+//! written back unchanged.
 
 mod migrate;
 mod picture;
@@ -24,7 +25,7 @@ use uuid::Uuid;
 pub use migrate::CURRENT_VERSION;
 pub use picture::{Crop, MAX_CROP_PERCENT, OnDisconnect, Picture, Rotation};
 pub use protocol::Protocol;
-pub use store::ConfigStore;
+pub use store::{ConfigStore, CopyThenRename, FileReplace};
 pub use templates::{BRAND_TEMPLATES, BrandTemplate, find_template};
 pub use transfer::{ExportError, ImportReport, export_streams, import_streams, unique_stream_name};
 pub use url::{StreamUrl, UrlError, parse_stream_url};
@@ -72,7 +73,8 @@ impl Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
-    /// Launch at sign-in (HKCU `Run` key), so cameras exist before other apps start.
+    /// Launch at sign-in (Windows: the HKCU `Run` key), so cameras exist before other apps
+    /// start. The name predates the other OSes and is kept for the file format.
     pub start_with_windows: bool,
     /// Minimizing hides the window and leaves only the tray icon.
     pub minimize_to_tray: bool,
@@ -98,7 +100,7 @@ impl Default for AppSettings {
 pub struct StreamConfig {
     /// Stable identity: names the IPC pipe and the virtual camera. Generated if missing.
     pub id: Uuid,
-    /// Shown as the webcam name ("<name> – Windows Virtual Camera"). Must be unique.
+    /// Shown as the webcam name (on Windows "<name> – Windows Virtual Camera"). Must be unique.
     pub name: String,
     pub enabled: bool,
     pub protocol: Protocol,
@@ -424,9 +426,9 @@ mod tests {
         assert_eq!(out["streams"][0]["protocol"], "http");
     }
 
-    #[cfg(windows)]
     #[test]
     fn json_round_trip() {
+        crate::secret::test_store::install();
         let mut config = Config::default();
         config.settings.minimize_to_tray = true;
         config.settings.log_level = LogLevel::Debug;
@@ -446,7 +448,7 @@ mod tests {
 
         let text = serde_json::to_string_pretty(&config).unwrap();
         assert!(!text.contains("hunter2"));
-        assert!(text.contains("\"password\": \"dpapi:"));
+        assert!(text.contains("\"password\": \"keyfile:"));
         let back: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(back, config);
     }

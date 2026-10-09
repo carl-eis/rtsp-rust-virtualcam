@@ -1259,7 +1259,7 @@ dependencies = [
  "rtspcam-ipc",
  "rtspcam-onvif",
  "rtspcam-pipeline",
- "rtspcam-vcam-mgr",
+ "rtspcam-platform",
  "tokio",
  "tracing",
  "url",
@@ -1280,6 +1280,7 @@ dependencies = [
  "rtspcam-ipc",
  "rtspcam-onvif",
  "rtspcam-pipeline",
+ "rtspcam-platform",
  "rtspcam-vcam-mgr",
  "serde_json",
  "tokio",
@@ -1298,6 +1299,7 @@ dependencies = [
  "directories",
  "notify",
  "percent-encoding",
+ "rand 0.9.5",
  "serde",
  "serde_json",
  "tempfile",
@@ -1307,7 +1309,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "windows",
  "zeroize",
 ]
 
@@ -1320,7 +1321,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "windows",
 ]
 
 [[package]]
@@ -1355,6 +1355,24 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "zeroize",
+]
+
+[[package]]
+name = "rtspcam-platform"
+version = "1.0.1"
+dependencies = [
+ "base64",
+ "openh264",
+ "rtspcam-core",
+ "rtspcam-ipc",
+ "rtspcam-pipeline",
+ "rtspcam-vcam-mgr",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
  "windows",
  "windows-core",
  "zeroize",
@@ -1366,6 +1384,7 @@ version = "1.0.1"
 dependencies = [
  "rtspcam-core",
  "rtspcam-ipc",
+ "rtspcam-platform",
  "tokio",
  "uuid",
  "windows",

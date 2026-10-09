@@ -13,7 +13,7 @@ rtspcam-core = { workspace = true, default-features = true }
 rtspcam-onvif.workspace = true
 rtspcam-ipc = { workspace = true, features = ["server"] }
 rtspcam-pipeline.workspace = true
-rtspcam-vcam-mgr.workspace = true
+rtspcam-platform.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
@@ -21,13 +21,12 @@ url.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+rtspcam-vcam-mgr.workspace = true
 windows = { workspace = true, features = [
     "Win32_Media_MediaFoundation",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
-    "Win32_System_ProcessStatus",
     "Win32_System_Registry",
-    "Win32_System_Threading",
 ] }
 windows-core.workspace = true
 

@@ -262,7 +262,8 @@ pub(crate) fn view(store: &ConfigStore, args: ViewArgs) -> anyhow::Result<ExitCo
     loop {
         std::thread::sleep(interval);
         tick += 1;
-        let (working_set, private) = memory();
+        let (working_set, private) =
+            rtspcam_platform::desktop::process_memory().unwrap_or_default();
         println!(
             "[{:>6.0} s] memory: {} MB working set, {} MB private",
             started.elapsed().as_secs_f64(),
@@ -333,31 +334,6 @@ pub(crate) fn save_bmp(path: &Path, frame: &Frame) -> anyhow::Result<()> {
     file.extend_from_slice(&[0; 24]); // BI_RGB, sizes, resolution, palette
     file.extend_from_slice(&bgra);
     fs::write(path, file).with_context(|| format!("could not write {}", path.display()))
-}
-
-/// (working set, private bytes) of this process.
-#[cfg(windows)]
-fn memory() -> (usize, usize) {
-    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
-    use windows::Win32::System::Threading::GetCurrentProcess;
-    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
-        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: the pseudo handle from GetCurrentProcess is always valid, and `counters` is a
-    // correctly sized PROCESS_MEMORY_COUNTERS_EX (its prefix is PROCESS_MEMORY_COUNTERS).
-    let ok = unsafe {
-        GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut counters).cast(), counters.cb)
-    };
-    if ok.is_err() {
-        return (0, 0);
-    }
-    (counters.WorkingSetSize, counters.PrivateUsage)
-}
-
-#[cfg(not(windows))]
-fn memory() -> (usize, usize) {
-    (0, 0)
 }
 
 #[cfg(test)]

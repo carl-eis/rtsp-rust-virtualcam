@@ -22,8 +22,8 @@ use tokio::runtime::Handle;
 use uuid::Uuid;
 
 use crate::manager::{CameraManager, Preview};
-use crate::single_instance::InstanceGuard;
 use crate::status::CameraStatus;
+use rtspcam_platform::InstanceLock;
 
 pub(crate) use main_window::MainWindow;
 
@@ -129,7 +129,7 @@ pub fn run(
     store: ConfigStore,
     config: Config,
     manager: CameraManager,
-    mut instance: InstanceGuard,
+    mut instance: Box<dyn InstanceLock>,
     start_minimized: bool,
 ) -> anyhow::Result<i32> {
     let core = Core::new(store, config, manager);
@@ -138,11 +138,11 @@ pub fn run(
     let slot: main_window::ShowSlot = Arc::default();
     {
         let slot = slot.clone();
-        instance.on_show(move || {
+        instance.on_show(Box::new(move || {
             if let Some(show) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
                 show();
             }
-        });
+        }));
     }
     let code = MainWindow::run(core, start_minimized, slot).map_err(|e| anyhow::anyhow!("{e}"))?;
     drop(instance);

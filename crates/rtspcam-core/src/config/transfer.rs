@@ -157,14 +157,14 @@ mod tests {
         StreamConfig::new(name, host)
     }
 
-    #[cfg(windows)]
     #[test]
     fn export_leaves_passwords_out() {
+        crate::secret::test_store::install();
         let mut s = stream("Front", "10.0.0.2");
         s.username = "admin".into();
         s.password = Some(crate::Secret::new("hunter2"));
         let text = export_streams(&[s]).unwrap();
-        assert!(!text.contains("hunter2") && !text.contains("dpapi"));
+        assert!(!text.contains("hunter2") && !text.contains("keyfile"));
         assert!(text.contains("\"username\": \"admin\""));
     }
 
