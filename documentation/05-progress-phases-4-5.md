@@ -111,3 +111,25 @@ and the autostart Run-key helper (tested against a throwaway value name).
 
 Phase 6 (discovery, brand templates, import/export), Phase 7 (installer, signing, OS check in the
 installer), Phase 8 (GPU path, soak, fuzzing, crash reports). Before those, do item 1 above.
+
+## 6. Update: first run through Frame Server (S0.2 and S0.6 resolved)
+
+The first real install showed `IMFVirtualCamera::AddProperty` (and `AddRegistryEntry`) fail with
+`E_ACCESSDENIED` for a current-user camera, which surfaced in the app as "Access is denied" on
+every camera. The CLSID-pool fallback turned out not to be needed:
+
+- **Camera identity (S0.2)**: the app sets the stream id and preferred format as string
+  attributes on the `IMFVirtualCamera` itself (it derives from `IMFAttributes`). Frame Server
+  passes them to the source in its activation attributes; `vcam.log` shows the id attribute and
+  the source resolving its camera. Constants: `CAMERA_ID_ATTRIBUTE`,
+  `PREFERRED_FORMAT_ATTRIBUTE` in `rtspcam-core`.
+- **Through Frame Server**: `vcam add --pattern` + `vcam read` read 181 samples in 6 s (30.1
+  fps), 122 distinct pattern frames, all 12 formats offered.
+- **Process exit (S0.6)**: a hard kill (`Stop-Process -Force`) removes the camera at once. The
+  stale-camera sweep at startup was therefore removed (it also depended on the device-property
+  id that does not work). The clean-exit path is covered by Drop/Shutdown.
+- Errors from `VirtualCamera::create` now name the failing call.
+- Still open: Camera app / Chrome / OBS / Discord checks (need a person), the 1-hour run, and
+  `vcam list` no longer shows the stream id (it read the device property).
+- After pulling this change, reinstall the DLL: `cargo build -p rtspcam-vcam` then
+  `./tools/vcam/install-dev.ps1` (the source now also reads the preferred-format attribute).

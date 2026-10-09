@@ -32,6 +32,8 @@ use crate::stream::{self, MediaStream, queue_time_event};
 /// Our own attribute (string): the camera id, for in-process tests and tools that create the
 /// source without a virtual camera device. Frame Server uses the device property instead.
 pub const RTSPCAM_ATTR_CAMERA_ID: GUID = GUID::from_u128(0xc5464fce_84dc_4420_8bc5_53830a558a46);
+pub(crate) const RTSPCAM_ATTR_PREFERRED_FORMAT: GUID =
+    GUID::from_u128(0x5d1b2c3a_6e7f_4a80_9b1c_2d3e4f506172);
 
 #[implement(IMFMediaSourceEx, IMFGetService, IKsControl)]
 pub(crate) struct MediaSource {
@@ -112,10 +114,9 @@ fn resolve_camera(activate: &IMFAttributes, source: Option<&IMFAttributes>) -> O
     if let Some(id) =
         get_string(activate, &RTSPCAM_ATTR_CAMERA_ID).and_then(|s| Uuid::parse_str(&s).ok())
     {
-        return Some(CameraInfo {
-            id,
-            preferred: None,
-        });
+        let preferred = get_string(activate, &RTSPCAM_ATTR_PREFERRED_FORMAT)
+            .and_then(|s| camera_id::parse_format(&s));
+        return Some(CameraInfo { id, preferred });
     }
     for attrs in std::iter::once(activate).chain(source) {
         if let Some(link) = get_string(

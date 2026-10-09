@@ -14,8 +14,8 @@ use std::fmt;
 use std::sync::OnceLock;
 
 use rtspcam_core::constants::{
-    CAMERA_FORMAT_PROPERTY_PID, CAMERA_ID_PROPERTY_FMTID, CAMERA_ID_PROPERTY_PID,
-    vcam_source_clsid_string,
+    CAMERA_ID_ATTRIBUTE, CAMERA_ID_PROPERTY_FMTID, CAMERA_ID_PROPERTY_PID,
+    PREFERRED_FORMAT_ATTRIBUTE, vcam_source_clsid_string,
 };
 use uuid::Uuid;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
@@ -139,13 +139,6 @@ fn property_key(pid: u32) -> DEVPROPKEY {
     }
 }
 
-fn utf16z_bytes(s: &str) -> Vec<u8> {
-    s.encode_utf16()
-        .chain(std::iter::once(0))
-        .flat_map(u16::to_le_bytes)
-        .collect()
-}
-
 /// One virtual camera. Shut down (removed from every app) when dropped.
 pub struct VirtualCamera {
     camera: IMFVirtualCamera,
@@ -188,24 +181,26 @@ impl VirtualCamera {
                 &mut raw,
             )
             .ok()
-            .map_err(VcamError::classify)?;
+            .map_err(|e| VcamError::classify(step("MFCreateVirtualCamera", e)))?;
             IMFVirtualCamera::from_raw(raw)
         };
         // SAFETY: valid camera; string properties are null-terminated UTF-16.
         unsafe {
-            camera.AddProperty(
-                &property_key(CAMERA_ID_PROPERTY_PID),
-                DEVPROP_TYPE_STRING,
-                &utf16z_bytes(&id.to_string()),
+            // Attributes on the camera are handed to the media source with its activation object.
+            // (`AddProperty` and `AddRegistryEntry` are refused for a current-user camera.)
+            camera.SetString(
+                &GUID::from_u128(CAMERA_ID_ATTRIBUTE.as_u128()),
+                &HSTRING::from(id.to_string()),
             )?;
             if let Some((w, h, fps)) = preferred {
-                camera.AddProperty(
-                    &property_key(CAMERA_FORMAT_PROPERTY_PID),
-                    DEVPROP_TYPE_STRING,
-                    &utf16z_bytes(&format!("{w}x{h}@{fps}")),
+                camera.SetString(
+                    &GUID::from_u128(PREFERRED_FORMAT_ATTRIBUTE.as_u128()),
+                    &HSTRING::from(format!("{w}x{h}@{fps}")),
                 )?;
             }
-            camera.Start(None).map_err(VcamError::classify)?;
+            camera
+                .Start(None)
+                .map_err(|e| VcamError::classify(step("Start", e)))?;
         }
         Ok(Self {
             camera,
@@ -330,6 +325,11 @@ fn camera_id(symbolic_link: &str) -> Option<Uuid> {
     Uuid::parse_str(s.trim_end_matches('\0')).ok()
 }
 
+/// Names the failing call in an error, so "Access is denied" says where.
+fn step(call: &str, e: windows_core::Error) -> windows_core::Error {
+    windows_core::Error::new(e.code(), format!("{call}: {}", e.message()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,10 +341,5 @@ mod tests {
         for d in &devices {
             assert!(!d.symbolic_link.is_empty() || d.name.is_empty());
         }
-    }
-
-    #[test]
-    fn property_strings_are_null_terminated_utf16() {
-        assert_eq!(utf16z_bytes("ab"), [b'a', 0, b'b', 0, 0, 0]);
     }
 }

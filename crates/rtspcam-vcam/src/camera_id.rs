@@ -1,9 +1,9 @@
 //! Finding out which app stream a virtual camera belongs to.
 //!
-//! The app attaches the stream id (and its preferred output format) to the camera with
-//! `IMFVirtualCamera::AddProperty`. Frame Server gives the media source the camera's symbolic
-//! link; the properties are read back from the device interface, or failing that from the
-//! device node behind it.
+//! The app sets the stream id (and its preferred output format) as string attributes on the
+//! `IMFVirtualCamera`; Frame Server hands them to the source with its activation object (see
+//! `source::resolve_camera`). The lookup below, through the device interface properties, is a
+//! fallback for `IMFVirtualCamera::AddProperty`, which Windows refuses for current-user cameras.
 
 use rtspcam_core::constants::{
     CAMERA_FORMAT_PROPERTY_PID, CAMERA_ID_PROPERTY_FMTID, CAMERA_ID_PROPERTY_PID,

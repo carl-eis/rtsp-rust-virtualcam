@@ -11,7 +11,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 
 use rtspcam_core::constants::frame_pipe_name;
-use rtspcam_vcam_mgr::{MfThread, VirtualCamera, list_devices};
+use rtspcam_vcam_mgr::{MfThread, VirtualCamera};
 use uuid::Uuid;
 
 /// What the manager needs from Windows.
@@ -51,8 +51,8 @@ pub struct VcamBackend {
 }
 
 impl VcamBackend {
-    /// Starts the camera thread. Cameras left behind by a crashed run (Windows normally
-    /// removes them with the process, but this is the safety net) are cleaned up first.
+    /// Starts the camera thread. (Cameras have session lifetime: Windows removes them when the
+    /// process ends, including after a crash or a hard kill.)
     pub fn start() -> Self {
         let (tx, rx) = mpsc::channel::<Command>();
         let thread = thread::Builder::new()
@@ -77,7 +77,6 @@ impl VcamBackend {
                         return;
                     }
                 };
-                remove_stale();
                 let mut cameras: HashMap<Uuid, VirtualCamera> = HashMap::new();
                 for cmd in rx {
                     match cmd {
@@ -174,35 +173,6 @@ impl CameraBackend for VcamBackend {
 impl Drop for VcamBackend {
     fn drop(&mut self) {
         self.remove_all();
-    }
-}
-
-/// Removes RTSP Cam cameras that exist in Windows but that nothing serves.
-///
-/// A camera whose pipe doesn't exist belongs to no running process: a crash left it behind.
-/// (`vcam add` from the CLI keeps its pipe, so its cameras are left alone.)
-fn remove_stale() {
-    let devices = match list_devices() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::warn!(error = %e, "could not list cameras to look for stale ones");
-            return;
-        }
-    };
-    for device in devices {
-        let Some(id) = device.rtspcam_id else {
-            continue;
-        };
-        if pipe_exists(id) {
-            continue;
-        }
-        tracing::warn!(%id, name = %device.name, "removing a stale virtual camera");
-        // Creating a camera with the same name and id reopens it; removing that handle
-        // removes it from the system.
-        match VirtualCamera::create(&device.name, id, None).and_then(VirtualCamera::remove) {
-            Ok(()) => {}
-            Err(e) => tracing::warn!(%id, error = %e, "could not remove the stale camera"),
-        }
     }
 }
 

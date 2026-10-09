@@ -19,6 +19,12 @@ pub const VCAM_SOURCE_CLSID: Uuid = uuid::uuid!("d533721f-03a1-4d9e-b562-31e82d1
 /// stream id as a string. The media source reads it back from its device interface to know
 /// which stream (and pipe) it belongs to.
 pub const CAMERA_ID_PROPERTY_FMTID: Uuid = uuid::uuid!("b6323007-9486-457a-b4c1-4fc5ce9d80d3");
+/// Attribute the app sets (as a string) on each `IMFVirtualCamera`; Frame Server hands it to the
+/// media source with its activation object. Value: the stream id.
+pub const CAMERA_ID_ATTRIBUTE: Uuid = uuid::uuid!("c5464fce-84dc-4420-8bc5-53830a558a46");
+/// Attribute with the stream's configured output, `"<width>x<height>@<fps>"`.
+pub const PREFERRED_FORMAT_ATTRIBUTE: Uuid = uuid::uuid!("5d1b2c3a-6e7f-4a80-9b1c-2d3e4f506172");
+
 /// `pid` of the camera-id device property. Values below 2 are reserved by Windows.
 pub const CAMERA_ID_PROPERTY_PID: u32 = 2;
 /// `pid` of a second property in the same set: the stream's configured output as
