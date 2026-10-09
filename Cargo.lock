@@ -1237,7 +1237,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rtspcam-core",
+ "rtspcam-ipc",
+ "rtspcam-pipeline",
+ "rtspcam-vcam-mgr",
+ "tokio",
  "tracing",
+ "uuid",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]
