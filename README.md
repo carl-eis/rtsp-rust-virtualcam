@@ -21,7 +21,8 @@ kernel driver is needed. Cameras exist only while the app is running.
 The cross-platform restructure (Slint UI, `rtspcam-platform`, `rtspcam-engine`) is described
 in [09 (plan)](documentation/09-cross-platform-plan.md) and
 [10 (progress)](documentation/10-progress-cross-platform.md). CI builds, lints and tests on
-Windows, Linux and macOS.
+Windows, Linux and macOS. Virtual cameras for Linux (v4l2loopback) and macOS (a camera
+extension) are planned in [11](documentation/11-virtual-cameras-linux-macos-plan.md).
 
 > **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
 > virtual camera media source (Phase 3) is built and tested in-process but not yet verified in

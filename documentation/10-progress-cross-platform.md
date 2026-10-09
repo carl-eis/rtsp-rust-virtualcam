@@ -141,6 +141,7 @@ Elsewhere:
 
 1. Review and merge PR #1.
 2. Work through §4.
+3. Virtual cameras on Linux and macOS: [11](11-virtual-cameras-linux-macos-plan.md).
 
 ## 7. Step E (CI)
 
