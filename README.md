@@ -70,7 +70,7 @@ exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
 
 **Build an installer** (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`)
 
-```powershell
+./tools/installer/build.ps1             # -> installeroutRtspCam-<version>-setup.exe
 ./tools/installer/build.ps1             # -> installeroutRtspCam-<version>-setup.exe
 ```
 
