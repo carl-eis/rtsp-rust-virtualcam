@@ -93,7 +93,7 @@ impl VcamBackend {
                                 .map(|c| {
                                     cameras.insert(id, c);
                                 })
-                                .map_err(|e| e.to_string());
+                                .map_err(|e| explain(&e.to_string()));
                             let _ = reply.send(result);
                         }
                         Command::Remove { id, reply } => {
@@ -218,4 +218,17 @@ pub fn pipe_exists(id: Uuid) -> bool {
     let found = unsafe { WaitNamedPipeW(&name, 1) }.as_bool();
     // SAFETY: reads the calling thread's last error.
     found || unsafe { GetLastError() } != ERROR_FILE_NOT_FOUND
+}
+
+/// Adds what to do about "Access is denied", which Windows reports both when the media source
+/// is not registered and when Frame Server cannot read its folder.
+fn explain(error: &str) -> String {
+    if error.contains("0x80070005") {
+        format!(
+            "{error}. The media source is not installed or Frame Server cannot read it \
+             (see tools/vcam/install-dev.ps1)"
+        )
+    } else {
+        error.to_owned()
+    }
 }

@@ -14,6 +14,7 @@ pub mod manager;
 pub mod single_instance;
 pub mod source;
 pub mod status;
+pub mod ui;
 
 pub use manager::{CameraManager, ManagerOptions, Preview};
 pub use status::{Activity, CameraStatus, VcamState};

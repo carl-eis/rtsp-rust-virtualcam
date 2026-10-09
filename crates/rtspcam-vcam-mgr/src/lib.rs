@@ -47,8 +47,9 @@ pub enum VcamError {
     )]
     NotRegistered,
     #[error(
-        "Windows refused access to the virtual camera. The media source DLL must be in a \
-         folder the Frame Server service can read (such as C:\\Program Files\\RtspCam)"
+        "Windows refused to create the camera. The media source DLL must be registered (run \
+         tools/vcam/install-dev.ps1) and sit in a folder the Frame Server service can read \
+         (such as C:\\Program Files\\RtspCam)"
     )]
     AccessDenied,
     #[error("{0}")]
