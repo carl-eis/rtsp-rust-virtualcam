@@ -1,0 +1,83 @@
+// Building blocks shared by the main window and the dialogs.
+
+import { Palette } from "std-widgets.slint";
+
+// Plain text in the style's text colour.
+export component Label inherits Text {
+    color: Palette.foreground;
+    vertical-alignment: center;
+}
+
+// Problems under a form.
+export component ErrorText inherits Text {
+    color: #d13438;
+    wrap: word-wrap;
+}
+
+// A form row: a fixed-width label, then the field(s).
+export component Row inherits HorizontalLayout {
+    in property <string> label;
+    in property <length> label-width: 120px;
+    spacing: 8px;
+    Label {
+        text: root.label;
+        width: root.label-width;
+    }
+
+    @children
+}
+
+// A dialog drawn over the window. It dims and blocks everything behind it (Slint has no
+// owned, modal windows, and Wayland doesn't let apps place windows), so dialogs work the same
+// on every OS. Escape cancels.
+export component Sheet inherits Rectangle {
+    in property <string> title;
+    in property <length> panel-width: 420px;
+    callback cancel();
+
+    background: #00000066;
+
+    // Swallow clicks meant for the window behind.
+    TouchArea { }
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        panel := Rectangle {
+            width: min(root.width - 24px, root.panel-width);
+            height: min(root.height - 24px, layout.preferred-height);
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: Palette.background;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: Palette.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000080;
+            // A window made smaller than the dialog cuts it off instead of drawing outside.
+            clip: true;
+
+            layout := VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                Label {
+                    text: root.title;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+
+                @children
+            }
+        }
+    }
+
+    init => {
+        keys.focus();
+    }
+}

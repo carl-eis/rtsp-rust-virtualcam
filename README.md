@@ -1,12 +1,28 @@
 # RTSP Cam
 
-A Windows 11 desktop app, written in Rust, that turns RTSP streams from IP cameras, NVRs or
-`mediamtx` into **webcams**. Each stream shows up as its own camera (for example
+A desktop app, written in Rust, that turns RTSP streams from IP cameras, NVRs or `mediamtx`
+into **webcams**. Each stream shows up as its own camera (for example
 "Front Door – Windows Virtual Camera") in Discord, Teams, Zoom, OBS, Chrome/Edge and the
 Windows Camera app.
 
-It uses the Windows 11 Media Foundation virtual camera API (`MFCreateVirtualCamera`), so no
+On Windows 11 it uses the Media Foundation virtual camera API (`MFCreateVirtualCamera`), so no
 kernel driver is needed. Cameras exist only while the app is running.
+
+## What works where
+
+| | Windows 11 | Linux | macOS |
+|---|---|---|---|
+| App window, stream list, live preview, dialogs, tray | yes | yes (tray needs a StatusNotifierItem host) | builds and passes its tests in CI; **not yet run** |
+| Virtual cameras | yes | not yet ("not supported on this platform yet") | not yet |
+| Decoding | H.264, H.265 (with the HEVC extension), MJPEG | H.264 only (OpenH264) | H.264 only (OpenH264) |
+| Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
+| Start at login | Run key | XDG autostart | LaunchAgent |
+
+The cross-platform restructure (Slint UI, `rtspcam-platform`, `rtspcam-engine`) is described
+in [09 (plan)](documentation/09-cross-platform-plan.md) and
+[10 (progress)](documentation/10-progress-cross-platform.md). CI builds, lints and tests on
+Windows, Linux and macOS. Virtual cameras for Linux (v4l2loopback) and macOS (a camera
+extension) are planned in [11](documentation/11-virtual-cameras-linux-macos-plan.md).
 
 > **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
 > virtual camera media source (Phase 3) is built and tested in-process but not yet verified in
@@ -22,18 +38,21 @@ kernel driver is needed. Cameras exist only while the app is running.
 
 ## Quickstart
 
-Needs the [requirements](#requirements) below (Windows 11, Rust, Visual Studio Build Tools).
-Run these from the repository root in PowerShell.
+Needs the [requirements](#requirements) below. The Windows commands run from the repository
+root in PowerShell; on Linux and macOS use a normal shell.
 
-**Build and run the app**
+**Build and run the app** (all OSes)
 
-```powershell
+```sh
 cargo run -p rtspcam-app                 # debug build, opens the window
 ```
 
 Click **Add stream**, enter the camera's IP address (plus user name and password), use
 **Test connection**, then **OK**. The stream's live preview appears in the window.
-Config is saved to `%APPDATA%\RtspCam\config.json`, logs go to `%LOCALAPPDATA%\RtspCam\logs`.
+Config and logs go to the per-user folders listed under [Configuration](#configuration)
+(on Windows `%APPDATA%\RtspCam\config.json` and `%LOCALAPPDATA%\RtspCam\logs`). On Linux and
+macOS the status line says "Virtual cameras are not supported on this platform yet": streams
+preview, but don't become cameras.
 
 Or click **Find cameras**: ONVIF cameras on your network are listed. Pick one, enter its
 login, **Get streams**, choose the main or sub stream, and the Add dialog opens filled in.
@@ -45,7 +64,7 @@ path for Hikvision, Dahua, Amcrest, Reolink, Tapo, UniFi Protect, Axis and Fosca
 rotates, flips, crops, adds the name or the time, and chooses what apps see when the stream
 drops; **File > Export / Import streams** moves streams between PCs (passwords are not included).
 
-**Make the cameras appear in Discord, OBS, the Camera app, ...** (one-time, needs admin)
+**Make the cameras appear in Discord, OBS, the Camera app, ...** (Windows; one-time, needs admin)
 
 ```powershell
 cargo build -p rtspcam-cli -p rtspcam-vcam
@@ -56,19 +75,20 @@ Without this the preview works but each camera shows "Access is denied". Restart
 after adding a camera so it re-lists devices. Rebuild and re-run the script after changing
 the DLL. `./tools/vcam/install-dev.ps1 -Uninstall` removes it.
 
-**Build an exe**
+**Build a release binary**
 
-```powershell
-cargo build -p rtspcam-app --release     # -> target\release\rtspcam.exe
+```sh
+cargo build -p rtspcam-app --release     # -> target/release/rtspcam (rtspcam.exe on Windows)
 ```
 
-The release build is a windowed app (no console) with the manifest embedded. The optional
-flags are `--minimized` (start in the tray) and `--headless` (no window, Ctrl+C quits). The
+The optional flags are `--minimized` (start in the tray) and `--headless` (no window, Ctrl+C
+quits). On Windows the release build is a windowed app (no console) with the manifest
+embedded, and the
 exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
 `cargo build -p rtspcam-vcam --release` and installed with
 `./tools/vcam/install-dev.ps1 -Configuration release`. For other PCs, build the installer instead (below).
 
-**Build an installer** (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`)
+**Build an installer** (Windows; needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`)
 
 ```powershell
 ./tools/installer/build.ps1             # -> installer\out\RtspCam-<version>-setup.exe
@@ -80,9 +100,15 @@ builds it in CI; see [08](documentation/08-progress-phase-7.md) for signing.
 
 ## Requirements
 
-- Windows 11 (build 22000 or later)
-- [Rust](https://rustup.rs/). The toolchain is pinned in `rust-toolchain.toml`, and rustup
-  installs it automatically.
+All OSes:
+
+- [Rust](https://rustup.rs/) 1.92 or later. The toolchain is pinned in `rust-toolchain.toml`,
+  and rustup installs it automatically.
+- A C and C++ compiler (OpenH264 is built from source).
+
+Windows:
+
+- Windows 11 (build 22000 or later) for the virtual cameras.
 - **Visual Studio Build Tools** with the *Desktop development with C++* workload (MSVC
   linker and Windows SDK):
 
@@ -90,17 +116,38 @@ builds it in CI; see [08](documentation/08-progress-phase-7.md) for signing.
   winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
   ```
 
-- Optional: [mise](https://mise.jdx.dev/) for the task shortcuts below.
+Linux (checked on Debian bookworm):
+
+- Build: `build-essential`, `pkg-config` and `libfontconfig1-dev` (Slint's font lookup links
+  fontconfig); no other GUI `-dev` packages are needed.
+- Run: the X11 or Wayland client libraries, loaded at run time. On a minimal X11 system:
+  `libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0`, plus fonts
+  (`fonts-dejavu-core`) and OpenGL (`libgl1 libegl1`; without it Slint draws in software).
+- Optional: a Secret Service (GNOME Keyring, KWallet) for passwords; without one the key is
+  kept in a file only you can read. A StatusNotifierItem host for the tray (KDE; GNOME needs
+  the AppIndicator extension). An XDG desktop portal for the Import/Export file dialogs.
+
+macOS:
+
+- Xcode Command Line Tools. Builds and passes its tests in CI, but the app has not been run on a Mac yet; see
+  [10](documentation/10-progress-cross-platform.md).
+
+Optional everywhere:
+
+- [mise](https://mise.jdx.dev/) for the task shortcuts below.
 - Optional: `mediamtx` + `ffmpeg`, or Docker, for the [test RTSP server](tools/test-rtsp/README.md).
 
 ## Build and test
 
-```powershell
+```sh
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
+
+The same commands work on Linux and macOS; the Windows-only crates (`rtspcam-vcam`,
+`rtspcam-vcam-mgr`) build as empty crates there.
 
 Or with mise: `mise run test`, `mise run lint`, `mise run ci`.
 
@@ -111,15 +158,19 @@ Or with mise: `mise run test`, `mise run lint`, `mise run ci`.
 
 ```
 crates/
-  rtspcam-core/       config model (JSON), Protocol + URL builder, DPAPI secrets, validation,
+  rtspcam-core/       config model (JSON), Protocol + URL builder, encrypted secrets, validation,
                       atomic save, migrations, file watching, logging, shared constants
-  rtspcam-ipc/        app ↔ virtual camera frame protocol over named pipes
-  rtspcam-pipeline/   RTSP ingest (retina), MF/OpenH264 decoding, scaling, frame bus, reconnects
-  rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (COM)
-  rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera
+  rtspcam-ipc/        app ↔ virtual camera frame protocol, over any byte stream
+  rtspcam-pipeline/   RTSP ingest (retina), OpenH264 decoding, scaling, frame bus, reconnects
   rtspcam-onvif/      ONVIF: WS-Discovery scan, GetProfiles / GetStreamUri
-  rtspcam-app/        rtspcam.exe: the desktop app                 (Phases 4–7)
-  rtspcam-cli/        rtspcam-cli.exe: developer tool
+  rtspcam-platform/   everything OS-specific, behind traits: virtual cameras, secrets,
+                      autostart, single instance, frame transport, MF decoder
+                      (windows/, linux/, macos/, unix/)
+  rtspcam-engine/     camera manager, preview, status, stream form, overlay (portable)
+  rtspcam-app/        rtspcam: the Slint desktop app (ui/*.slint + src/ui/)
+  rtspcam-cli/        rtspcam-cli: developer tool (`vcam` subcommand Windows-only)
+  rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (Windows)
+  rtspcam-vcam-mgr/   safe wrapper over MFCreateVirtualCamera (Windows)
 tools/test-rtsp/      mediamtx + ffmpeg test streams
 tools/vcam/          developer install of the media source DLL
 installer/            Inno Setup script (tools/installer/build.ps1 builds it)
@@ -128,7 +179,15 @@ documentation/        plan and decision records
 
 ## Configuration
 
-Everything lives in one JSON file at `%APPDATA%\RtspCam\config.json`:
+Everything lives in one JSON file, `config.json`, in the per-user config folder:
+
+| | Config | Logs |
+|---|---|---|
+| Windows | `%APPDATA%\RtspCam\` | `%LOCALAPPDATA%\RtspCam\logs\` |
+| Linux | `~/.config/RtspCam/` (`$XDG_CONFIG_HOME`) | `~/.local/share/RtspCam/logs/` |
+| macOS | `~/Library/Application Support/RtspCam/` | `~/Library/Application Support/RtspCam/logs/` |
+
+`rtspcam-cli config path` prints it. The format is the same on every OS:
 
 ```json
 {
@@ -156,8 +215,12 @@ Everything lives in one JSON file at `%APPDATA%\RtspCam\config.json`:
 ```
 
 - Every field is optional and has a default. Unknown fields are kept when the file is saved.
-- Passwords are encrypted with Windows DPAPI (current user only). A plain-text password typed
-  into the file by hand is encrypted the next time the app saves.
+- Passwords are encrypted. Windows: DPAPI (current user only), stored as `dpapi:...`. Linux and
+  macOS: with a key kept in Secret Service or the Keychain (`keyring:...`), or, if neither is
+  available, in a `secret.key` file next to the config that only you can read (`keyfile:...`).
+  A password that can't be decrypted (for example a config copied from another PC or OS) is
+  kept, and the stream asks you to enter it again. A plain-text password typed into the file
+  by hand is encrypted the next time the app saves.
 - Saves are atomic, and the previous version is kept as `config.json.bak`.
 - Edits made to the file while the app runs are picked up automatically.
 - `picture` is optional (all of its fields are too): `rotate` is `"0"`, `"90"`, `"180"` or `"270"`
@@ -188,6 +251,7 @@ cargo run -p rtspcam-cli -- onvif discover                         # ONVIF camer
 cargo run -p rtspcam-cli -- onvif streams 192.168.1.50 -u admin -p secret
 cargo run -p rtspcam-cli -- onvif streams 192.168.1.50:2020 --credentials-from "Front Door"
 
+# Windows only:
 cargo build -p rtspcam-cli -p rtspcam-vcam
 ./tools/vcam/install-dev.ps1                                      # once, asks for admin
 cargo run -p rtspcam-cli -- vcam add --name "Test" --pattern       # a camera until Ctrl+C
@@ -198,5 +262,6 @@ The media source logs to `%ProgramData%\RtspCam\logs\vcam.log`.
 
 ## Logs
 
-Logs are written to `%LOCALAPPDATA%\RtspCam\logs\` (rotated daily, 7 files kept). Set
+Logs are written to the logs folder in the table under [Configuration](#configuration)
+(rotated daily, 7 files kept); **Help > Open logs folder** opens it. Set
 `RTSPCAM_LOG` to override the level, for example `RTSPCAM_LOG=debug`.

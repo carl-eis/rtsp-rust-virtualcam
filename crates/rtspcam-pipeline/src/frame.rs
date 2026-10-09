@@ -35,7 +35,7 @@ impl Frame {
     /// If a dimension is odd or zero, or `data` has the wrong length.
     pub fn from_nv12(width: u32, height: u32, data: Vec<u8>) -> Self {
         assert!(
-            width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0,
+            width > 0 && height > 0 && width.is_multiple_of(2) && height.is_multiple_of(2),
             "NV12 frames need even, non-zero dimensions (got {width}x{height})"
         );
         assert_eq!(
@@ -109,7 +109,7 @@ impl std::fmt::Debug for Frame {
 /// Decoders hand out pictures with padding (for example 1920x1088 with a 1920x1080 visible area,
 /// or rows wider than the picture). `width` and `height` are rounded down to even values.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Yuv420Planes<'a> {
+pub struct Yuv420Planes<'a> {
     pub y: &'a [u8],
     pub y_stride: usize,
     pub chroma: Chroma<'a>,
@@ -118,7 +118,7 @@ pub(crate) struct Yuv420Planes<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Chroma<'a> {
+pub enum Chroma<'a> {
     /// NV12: interleaved U, V.
     Interleaved { uv: &'a [u8], stride: usize },
     /// I420 / YV12: separate U and V planes.
@@ -130,7 +130,7 @@ pub(crate) enum Chroma<'a> {
 }
 
 impl Yuv420Planes<'_> {
-    pub(crate) fn to_frame(self) -> Option<Frame> {
+    pub fn to_frame(self) -> Option<Frame> {
         let w = (self.width & !1) as usize;
         let h = (self.height & !1) as usize;
         if w == 0 || h == 0 {
@@ -152,7 +152,7 @@ impl Yuv420Planes<'_> {
                 Chroma::Planar { u, v, stride } => {
                     let u = u.get(row * stride..row * stride + cw)?;
                     let v = v.get(row * stride..row * stride + cw)?;
-                    for (i, pair) in dst.chunks_exact_mut(2).enumerate() {
+                    for (i, pair) in dst.as_chunks_mut::<2>().0.iter_mut().enumerate() {
                         pair[0] = u[i];
                         pair[1] = v[i];
                     }
@@ -164,7 +164,7 @@ impl Yuv420Planes<'_> {
 }
 
 /// Converts a packed YUY2 (YUYV 4:2:2) picture to NV12 by averaging chroma of row pairs.
-pub(crate) fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) -> Option<Frame> {
+pub fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) -> Option<Frame> {
     let w = (width & !1) as usize;
     let h = (height & !1) as usize;
     if w == 0 || h == 0 {
@@ -174,7 +174,7 @@ pub(crate) fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) 
     let (dst_y, dst_uv) = data.split_at_mut(w * h);
     for row in 0..h {
         let line = src.get(row * stride..row * stride + w * 2)?;
-        for (x, px) in line.chunks_exact(2).enumerate() {
+        for (x, px) in line.as_chunks::<2>().0.iter().enumerate() {
             dst_y[row * w + x] = px[0];
         }
     }
@@ -183,7 +183,13 @@ pub(crate) fn yuy2_to_frame(src: &[u8], stride: usize, width: u32, height: u32) 
         let b = src.get((2 * row + 1) * stride..(2 * row + 1) * stride + w * 2)?;
         let dst = &mut dst_uv[row * w..(row + 1) * w];
         // Each 4-byte group Y0 U Y1 V covers two pixels -> one UV pair.
-        for (i, (ga, gb)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+        for (i, (ga, gb)) in a
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.as_chunks::<4>().0)
+            .enumerate()
+        {
             dst[2 * i] = avg(ga[1], gb[1]);
             dst[2 * i + 1] = avg(ga[3], gb[3]);
         }

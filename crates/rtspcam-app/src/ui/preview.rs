@@ -1,179 +1,230 @@
-//! The preview pane: a child window that paints the newest picture (or a message) with GDI.
+//! The live preview: a worker thread takes the selected stream's newest picture, scales it to
+//! the preview box and converts it to RGBA, then hands the finished image to the UI thread.
+//!
+//! The UI thread never touches the pipeline or does pixel work: it only swaps in an image that
+//! is ready. At most one image is on its way to the UI at a time, so a busy UI is never queued
+//! up with stale pictures, and pictures arrive at most at [`FRAME_INTERVAL`].
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use rtspcam_core::FitMode;
-use rtspcam_pipeline::scale::nv12_to_bgra;
+use rtspcam_engine::{Activity, Preview};
+use rtspcam_pipeline::scale::nv12_to_rgba;
 use rtspcam_pipeline::{Frame, Matrix, Scaler};
-use windows::Win32::Foundation::{COLORREF, HWND, RECT};
-use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BeginPaint, CreateSolidBrush, DIB_RGB_COLORS, DT_CENTER,
-    DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT,
-    SRCCOPY, SetBkMode, SetTextColor, StretchDIBits, TRANSPARENT,
-};
-use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
-use winsafe::{self as w, co, gui, prelude::*};
+use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
-const BACKGROUND: COLORREF = COLORREF(0x0018_1818);
-const TEXT: COLORREF = COLORREF(0x00d8_d8d8);
+use super::generated::MainWindow;
+
+/// How often the worker looks for a new picture (about the display rate of a camera).
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Default)]
-struct Content {
-    /// The last picture, already scaled to the window and converted to BGRA.
-    bgra: Vec<u8>,
-    size: (i32, i32),
-    /// Shown instead of a picture.
-    message: String,
-    scaler: Scaler,
+struct Shared {
+    /// The stream being previewed. Dropping it releases an on-demand stream.
+    current: Mutex<Option<Arc<Preview>>>,
+    /// The preview box in physical pixels.
+    target: Mutex<(u32, u32)>,
+    /// Bumped whenever the previewed stream changes, so late pictures of the old one are
+    /// thrown away.
+    generation: AtomicU64,
+    /// An image is on its way to the UI thread.
+    pending: AtomicBool,
+    /// The last thing handed to the UI was a picture (not "nothing").
+    has_picture: AtomicBool,
+    stop: AtomicBool,
 }
 
-/// See the [module docs](self).
-#[derive(Clone)]
-pub(crate) struct PreviewPane {
-    wnd: gui::WindowControl,
-    content: Rc<RefCell<Content>>,
+/// Owns the preview worker. Dropping it stops the worker.
+pub(crate) struct PreviewFeed {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
 }
 
-impl PreviewPane {
-    pub(crate) fn new(
-        parent: &(impl GuiParent + 'static),
-        pos: (i32, i32),
-        size: (i32, i32),
-    ) -> Self {
-        let wnd = gui::WindowControl::new(
-            parent,
-            gui::WindowControlOpts {
-                position: pos,
-                size,
-                class_bg_brush: gui::Brush::Color(co::COLOR::BACKGROUND),
-                ..Default::default()
-            },
-        );
-        let me = Self {
-            wnd,
-            content: Rc::default(),
+impl PreviewFeed {
+    pub(crate) fn start(ui: slint::Weak<MainWindow>) -> Self {
+        let shared = Arc::new(Shared::default());
+        let worker = shared.clone();
+        let thread = thread::Builder::new()
+            .name("preview".into())
+            .spawn(move || run(&worker, &ui))
+            .map_err(|e| tracing::error!(error = %e, "could not start the preview"))
+            .ok();
+        Self { shared, thread }
+    }
+
+    /// Previews `preview` instead of whatever was shown (`None`: nothing).
+    pub(crate) fn set(&self, preview: Option<Preview>) {
+        self.shared.generation.fetch_add(1, Ordering::SeqCst);
+        self.shared.has_picture.store(false, Ordering::SeqCst);
+        *self
+            .shared
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = preview.map(Arc::new);
+    }
+
+    pub(crate) fn is_set(&self) -> bool {
+        self.current().is_some()
+    }
+
+    /// The previewed stream's state, for the message shown when there is no picture.
+    pub(crate) fn activity(&self) -> Option<Activity> {
+        self.current().map(|p| p.activity())
+    }
+
+    /// Whether a picture is showing.
+    pub(crate) fn has_picture(&self) -> bool {
+        self.shared.has_picture.load(Ordering::SeqCst)
+    }
+
+    /// The preview box's size in physical pixels.
+    pub(crate) fn set_target(&self, width: u32, height: u32) {
+        *self
+            .shared
+            .target
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = (width, height);
+    }
+
+    fn current(&self) -> Option<Arc<Preview>> {
+        self.shared
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Drop for PreviewFeed {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::SeqCst);
+        self.set(None);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run(shared: &Arc<Shared>, ui: &slint::Weak<MainWindow>) {
+    let mut scaler = Scaler::new();
+    let mut rgba = Vec::new();
+    // The picture last converted, and for which stream and size.
+    let mut last: Option<(Arc<Frame>, u64, (u32, u32))> = None;
+    while !shared.stop.load(Ordering::SeqCst) {
+        thread::sleep(FRAME_INTERVAL);
+        if shared.pending.load(Ordering::SeqCst) {
+            continue; // the UI hasn't taken the last one yet
+        }
+        let generation = shared.generation.load(Ordering::SeqCst);
+        let preview = shared
+            .current
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let target = *shared.target.lock().unwrap_or_else(PoisonError::into_inner);
+        let frame = preview.as_ref().and_then(|p| p.latest());
+        drop(preview);
+
+        let Some(frame) = frame else {
+            // Nothing to show: clear the picture once.
+            if last.take().is_some() || shared.has_picture.swap(false, Ordering::SeqCst) {
+                deliver(shared, ui, generation, None);
+            }
+            continue;
         };
-        me.events();
-        me
+        if last
+            .as_ref()
+            .is_some_and(|(f, g, t)| Arc::ptr_eq(f, &frame) && *g == generation && *t == target)
+        {
+            continue;
+        }
+        let Some((w, h)) = fit_within(frame.width(), frame.height(), target) else {
+            continue; // the preview box isn't laid out yet
+        };
+        let scaled = scaler.scale(&frame, w, h, FitMode::Stretch);
+        nv12_to_rgba(&scaled, Matrix::for_height(frame.height()), &mut rgba);
+        let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+        buffer.make_mut_bytes().copy_from_slice(&rgba);
+        last = Some((frame, generation, target));
+        deliver(shared, ui, generation, Some(buffer));
     }
+}
 
-    fn events(&self) {
-        self.wnd.on().wm_erase_bkgnd(|_| Ok(1));
-        let me = self.clone();
-        self.wnd.on().wm_paint(move || {
-            me.paint();
-            Ok(())
-        });
-    }
-
-    fn hwnd(&self) -> HWND {
-        HWND(self.wnd.hwnd().ptr())
-    }
-
-    /// Shows `frame` (letterboxed to the pane), or `message` when there is none.
-    pub(crate) fn show(&self, frame: Option<&Arc<Frame>>, message: &str) {
-        let mut c = self.content.borrow_mut();
-        let mut rect = RECT::default();
-        // SAFETY: a valid window handle and RECT.
-        if unsafe { GetClientRect(self.hwnd(), &mut rect) }.is_err() {
+/// Hands a picture (or "no picture") to the UI thread, unless the previewed stream changed in
+/// the meantime.
+fn deliver(
+    shared: &Arc<Shared>,
+    ui: &slint::Weak<MainWindow>,
+    generation: u64,
+    picture: Option<SharedPixelBuffer<Rgba8Pixel>>,
+) {
+    shared.pending.store(true, Ordering::SeqCst);
+    let (shared, ui) = (shared.clone(), ui.clone());
+    let sent = slint::invoke_from_event_loop(move || {
+        shared.pending.store(false, Ordering::SeqCst);
+        if shared.generation.load(Ordering::SeqCst) != generation {
             return;
         }
-        let (w, h) = (rect.right.max(2) & !1, rect.bottom.max(2) & !1);
-        match frame {
-            Some(frame) => {
-                let scaled = c
-                    .scaler
-                    .scale(frame, w as u32, h as u32, FitMode::Letterbox);
-                let mut bgra = std::mem::take(&mut c.bgra);
-                nv12_to_bgra(&scaled, Matrix::for_height(frame.height()), &mut bgra);
-                c.bgra = bgra;
-                c.size = (w, h);
-                c.message.clear();
-            }
-            None => {
-                c.bgra.clear();
-                c.message = message.to_owned();
-            }
-        }
-        drop(c);
-        // SAFETY: a valid window handle; repaints the whole pane.
-        unsafe {
-            let _ = InvalidateRect(Some(self.hwnd()), None, false);
-        }
-    }
-
-    fn paint(&self) {
-        let c = self.content.borrow();
-        let hwnd = self.hwnd();
-        let mut ps = PAINTSTRUCT::default();
-        // SAFETY: standard WM_PAINT sequence on our own window; every GDI object created here is
-        // deleted before EndPaint, and the pixel buffer outlives the StretchDIBits call.
-        unsafe {
-            let hdc = BeginPaint(hwnd, &mut ps);
-            let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
-            let (w, h) = c.size;
-            if !c.bgra.is_empty() && c.bgra.len() == (w * h * 4) as usize {
-                let info = BITMAPINFO {
-                    bmiHeader: BITMAPINFOHEADER {
-                        biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                        biWidth: w,
-                        // Negative: the rows are top-down.
-                        biHeight: -h,
-                        biPlanes: 1,
-                        biBitCount: 32,
-                        biCompression: BI_RGB.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-                StretchDIBits(
-                    hdc,
-                    0,
-                    0,
-                    rect.right,
-                    rect.bottom,
-                    0,
-                    0,
-                    w,
-                    h,
-                    Some(c.bgra.as_ptr().cast()),
-                    &info,
-                    DIB_RGB_COLORS,
-                    SRCCOPY,
-                );
-            } else {
-                let brush = CreateSolidBrush(BACKGROUND);
-                FillRect(hdc, &rect, brush);
-                let _ = DeleteObject(brush.into());
-                SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, TEXT);
-                let mut text: Vec<u16> = c.message.encode_utf16().collect();
-                // Centered with some padding.
-                let mut inner = RECT {
-                    left: rect.left + 12,
-                    top: rect.top + 12,
-                    right: rect.right - 12,
-                    bottom: rect.bottom - 12,
-                };
-                if !text.is_empty() {
-                    DrawTextW(hdc, &mut text, &mut inner, DT_CENTER | DT_WORDBREAK);
-                }
-            }
-            let _ = EndPaint(hwnd, &ps);
-        }
+        let Some(ui) = ui.upgrade() else { return };
+        shared
+            .has_picture
+            .store(picture.is_some(), Ordering::SeqCst);
+        ui.set_preview_image(picture.map(Image::from_rgba8).unwrap_or_default());
+    });
+    if sent.is_err() {
+        // The event loop has ended: the app is quitting, and `pending` stays set.
+        tracing::debug!("the UI has gone; the preview stops delivering");
     }
 }
 
-impl AsRef<gui::WindowControl> for PreviewPane {
-    fn as_ref(&self) -> &gui::WindowControl {
-        &self.wnd
+/// The largest even size with the picture's shape that fits in `target`, or `None` while the
+/// target is empty.
+pub(crate) fn fit_within(width: u32, height: u32, target: (u32, u32)) -> Option<(u32, u32)> {
+    let (tw, th) = target;
+    if width == 0 || height == 0 || tw < 2 || th < 2 {
+        return None;
     }
+    let scale = f64::min(
+        f64::from(tw) / f64::from(width),
+        f64::from(th) / f64::from(height),
+    );
+    let w = ((f64::from(width) * scale) as u32).max(2) & !1;
+    let h = ((f64::from(height) * scale) as u32).max(2) & !1;
+    Some((w, h))
 }
 
-#[allow(dead_code)]
-fn _assert_hwnd_type(h: &w::HWND) -> *mut std::ffi::c_void {
-    h.ptr()
+/// A frame as an image at most `max` pixels in size (for thumbnails). Any thread.
+pub(crate) fn thumbnail(frame: &Frame, max: (u32, u32)) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+    let (w, h) = fit_within(frame.width(), frame.height(), max)?;
+    let scaled = Scaler::new().scale(frame, w, h, FitMode::Stretch);
+    let mut rgba = Vec::new();
+    nv12_to_rgba(&scaled, Matrix::for_height(frame.height()), &mut rgba);
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+    buffer.make_mut_bytes().copy_from_slice(&rgba);
+    Some(buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pictures_keep_their_shape_inside_the_box() {
+        assert_eq!(fit_within(1920, 1080, (480, 270)), Some((480, 270)));
+        assert_eq!(fit_within(2304, 1296, (960, 600)), Some((960, 540)));
+        // Portrait (a rotated camera) is pillarboxed.
+        assert_eq!(fit_within(720, 1280, (480, 270)), Some((150, 270)));
+        assert_eq!(fit_within(1280, 720, (0, 0)), None);
+        assert_eq!(fit_within(0, 720, (480, 270)), None);
+    }
+
+    #[test]
+    fn thumbnails_are_rgba_of_the_right_size() {
+        let buffer = thumbnail(&Frame::black(640, 480), (112, 63)).unwrap();
+        assert_eq!((buffer.width(), buffer.height()), (84, 62));
+        assert!(buffer.as_slice().iter().all(|p| p.r < 5 && p.a == 255));
+    }
 }

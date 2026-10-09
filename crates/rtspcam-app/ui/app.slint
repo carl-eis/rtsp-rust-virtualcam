@@ -1,0 +1,307 @@
+// RTSP Cam's window and tray icon. The Rust side (src/ui/) fills in the properties and handles
+// the callbacks; this file only lays things out.
+
+import { Button, Palette, StandardTableView } from "std-widgets.slint";
+import { Label } from "common.slint";
+import {
+    DiscoverDialog, DiscoverSheet, MessageDialog, MessageSheet, PictureDialog, PictureSheet,
+    SettingsDialog, SettingsSheet, StreamDialog, StreamSheet,
+} from "dialogs.slint";
+
+export { DiscoverDialog, MessageDialog, PictureDialog, SettingsDialog, StreamDialog }
+
+export component MainWindow inherits Window {
+    // One row per stream: Name, Address, Status, Enabled.
+    in property <[[StandardListViewItem]]> rows;
+    in-out property <int> current-row: -1;
+    in property <bool> has-selection;
+    in property <string> toggle-text: "Stop";
+    in property <string> info;
+    in property <image> preview-image;
+    // Shown over the preview when there is no picture.
+    in property <string> preview-message;
+    out property <length> preview-width: preview-box.width;
+    out property <length> preview-height: preview-box.height;
+    in property <string> status-cameras;
+    in property <string> status-errors;
+    // A dialog is open: the window behind it doesn't take input.
+    out property <bool> modal: StreamDialog.open || DiscoverDialog.open || PictureDialog.open || SettingsDialog.open || MessageDialog.open;
+
+    callback add-stream();
+    callback find-cameras();
+    callback import-streams();
+    callback export-streams();
+    callback edit-stream();
+    callback remove-stream();
+    callback toggle-stream();
+    callback open-settings();
+    callback quit();
+    callback open-logs();
+    callback about();
+    callback row-selected(int);
+    // A left-button press on a row (double presses edit the stream).
+    callback row-pressed(int);
+
+    title: "RTSP Cam";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 980px;
+    preferred-height: 600px;
+    min-width: 800px;
+    min-height: 520px;
+
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "Find cameras...";
+                enabled: !root.modal;
+                activated => {
+                    root.find-cameras();
+                }
+            }
+
+            MenuItem {
+                title: "Import streams...";
+                enabled: !root.modal;
+                activated => {
+                    root.import-streams();
+                }
+            }
+
+            MenuItem {
+                title: "Export streams...";
+                enabled: !root.modal;
+                activated => {
+                    root.export-streams();
+                }
+            }
+
+            MenuSeparator { }
+
+            MenuItem {
+                title: "Settings...";
+                enabled: !root.modal;
+                activated => {
+                    root.open-settings();
+                }
+            }
+
+            MenuSeparator { }
+
+            MenuItem {
+                title: "Quit";
+                activated => {
+                    root.quit();
+                }
+            }
+        }
+
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "Open logs folder";
+                activated => {
+                    root.open-logs();
+                }
+            }
+
+            MenuItem {
+                title: "About";
+                enabled: !root.modal;
+                activated => {
+                    root.about();
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        VerticalLayout {
+            padding: 10px;
+            spacing: 10px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 6px;
+                Button {
+                    text: "Add stream";
+                    min-width: 106px;
+                    clicked => {
+                        root.add-stream();
+                    }
+                }
+
+                Button {
+                    text: "Find cameras";
+                    min-width: 106px;
+                    clicked => {
+                        root.find-cameras();
+                    }
+                }
+
+                Button {
+                    text: "Edit";
+                    min-width: 106px;
+                    enabled: root.has-selection;
+                    clicked => {
+                        root.edit-stream();
+                    }
+                }
+
+                Button {
+                    text: "Remove";
+                    min-width: 106px;
+                    enabled: root.has-selection;
+                    clicked => {
+                        root.remove-stream();
+                    }
+                }
+
+                Button {
+                    text: root.toggle-text;
+                    min-width: 106px;
+                    enabled: root.has-selection;
+                    clicked => {
+                        root.toggle-stream();
+                    }
+                }
+
+                Button {
+                    text: "Settings";
+                    min-width: 106px;
+                    clicked => {
+                        root.open-settings();
+                    }
+                }
+            }
+
+            StandardTableView {
+                min-height: 140px;
+                vertical-stretch: 1;
+                columns: [
+                    { title: "Name", width: 190px },
+                    { title: "Address", width: 250px },
+                    { title: "Status", width: 360px },
+                    { title: "Enabled", width: 90px },
+                ];
+                rows: root.rows;
+                current-row <=> root.current-row;
+                current-row-changed(row) => {
+                    root.row-selected(row);
+                }
+                row-pointer-event(row, event, position) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.row-pressed(row);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 14px;
+                vertical-stretch: 1;
+                min-height: 270px;
+                preview-box := Rectangle {
+                    min-width: 480px;
+                    horizontal-stretch: 1;
+                    background: #181818;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.preview-image;
+                        image-fit: contain;
+                    }
+
+                    Text {
+                        width: parent.width - 24px;
+                        text: root.preview-message;
+                        color: #d8d8d8;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Label {
+                    text: root.info;
+                    wrap: word-wrap;
+                    vertical-alignment: top;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+
+        Rectangle {
+            height: 26px;
+            background: Palette.alternate-background;
+            border-width: 0px;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 10px;
+                Label {
+                    text: root.status-cameras;
+                    horizontal-stretch: 3;
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: Palette.border;
+                }
+
+                Label {
+                    text: root.status-errors;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+    }
+
+    if StreamDialog.open: StreamSheet { }
+    if DiscoverDialog.open: DiscoverSheet { }
+    if SettingsDialog.open: SettingsSheet { }
+    // The Picture dialog opens from the Add/Edit dialog, so it goes on top of it.
+    if PictureDialog.open: PictureSheet { }
+    if MessageDialog.open: MessageSheet { }
+}
+
+// The tray (notification area / menu bar) icon. Left-click opens the window; the menu has the
+// rest. Linux needs a StatusNotifierItem host (KDE and most desktops; GNOME with the
+// AppIndicator extension).
+export component AppTray inherits SystemTrayIcon {
+    in property <string> tip;
+    in property <bool> paused;
+    callback open();
+    callback toggle-pause();
+    callback quit();
+
+    icon: @image-url("../assets/icon.png");
+    tooltip: root.tip;
+    title: "RTSP Cam";
+    clicked => {
+        root.open();
+    }
+
+    Menu {
+        MenuItem {
+            title: "Open";
+            activated => {
+                root.open();
+            }
+        }
+
+        MenuItem {
+            title: root.paused ? "Resume all" : "Pause all";
+            activated => {
+                root.toggle-pause();
+            }
+        }
+
+        MenuSeparator { }
+
+        MenuItem {
+            title: "Quit";
+            activated => {
+                root.quit();
+            }
+        }
+    }
+}

@@ -392,7 +392,7 @@ impl StatsWindow {
     }
 }
 
-/// The decode thread: owns the decoder (Media Foundation objects stay on this thread).
+/// The decode thread: owns the decoder (platform decoder objects stay on this thread).
 fn decode_loop(
     mut rx: mpsc::Receiver<DecodeMsg>,
     events: mpsc::UnboundedSender<DecodeEvent>,

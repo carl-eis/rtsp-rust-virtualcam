@@ -1,27 +1,70 @@
-//! Strings protected with Windows DPAPI (current-user scope).
+//! Encrypted strings: the stream passwords in `config.json`.
 //!
-//! In `config.json` a secret is stored as `"dpapi:<base64>"`. Only the same Windows user on the
-//! same machine can decrypt it. A value without the prefix is treated as plain text (for
-//! hand-edited files) and is encrypted the next time the config is saved.
+//! In the file a secret is stored encrypted, behind a prefix that says how:
+//!
+//! - `dpapi:<base64>`: Windows DPAPI, current user. Only the same Windows user on the same
+//!   machine can decrypt it.
+//! - `keyring:<base64>` and `keyfile:<base64>`: Linux and macOS, encrypted with a key kept in
+//!   the OS keyring (or, without one, in a file only the user can read).
+//!
+//! This crate has no OS code: the encryption is done by the [`SecretStore`] that the program
+//! installs at startup with [`install_store`] (`rtspcam_platform::install` does it). A value
+//! without one of the [`SEALED_PREFIXES`] is plain text (for hand-edited files) and is encrypted
+//! the next time the config is saved.
+//!
+//! A value that can't be decrypted (another user or machine, a `dpapi:` value on Linux, a lost
+//! keyring key) never fails the load: it becomes a *locked* secret, which is written back
+//! unchanged and reported by validation so the user can enter the password again.
 //!
 //! A [`Secret`] never prints its contents: `Debug` is redacted, so it is safe to log a
 //! [`StreamConfig`](crate::StreamConfig).
 
 use std::fmt;
+use std::sync::OnceLock;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use zeroize::Zeroizing;
 
 use crate::error::SecretError;
 
-/// Prefix that marks a DPAPI-encrypted value in the config file.
+/// Prefix of a value encrypted with Windows DPAPI.
 pub const DPAPI_PREFIX: &str = "dpapi:";
+/// Prefix of a value encrypted with a key kept in the Linux or macOS keyring.
+pub const KEYRING_PREFIX: &str = "keyring:";
+/// Prefix of a value encrypted with a key kept in a file (no keyring was available).
+pub const KEYFILE_PREFIX: &str = "keyfile:";
 
-/// Extra entropy mixed into every DPAPI call, so other apps running as the same user can't
-/// decrypt our blobs by accident.
-const ENTROPY: &[u8] = b"RtspCam.secret.v1";
+/// Every prefix that marks an encrypted value. Anything else is plain text.
+pub const SEALED_PREFIXES: [&str; 3] = [DPAPI_PREFIX, KEYRING_PREFIX, KEYFILE_PREFIX];
+
+/// Encrypts and decrypts stored secrets. One is installed per process with
+/// [`install_store`]; the implementations live in `rtspcam-platform`.
+pub trait SecretStore: Send + Sync + 'static {
+    /// Encrypts `plain` and returns the value to store, including its prefix.
+    fn seal(&self, plain: &str) -> Result<String, SecretError>;
+
+    /// Decrypts a stored value that starts with one of [`SEALED_PREFIXES`]. A prefix this store
+    /// doesn't handle (a `dpapi:` value on Linux, say) is an error, not a panic.
+    fn unseal(&self, stored: &str) -> Result<Zeroizing<String>, SecretError>;
+}
+
+static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
+
+/// Sets the store used to encrypt and decrypt every [`Secret`] in this process. Call it once at
+/// startup, before loading the config. Returns `false` (and keeps the first store) if one was
+/// already installed.
+pub fn install_store(store: Box<dyn SecretStore>) -> bool {
+    STORE.set(store).is_ok()
+}
+
+fn installed() -> Option<&'static dyn SecretStore> {
+    STORE.get().map(Box::as_ref)
+}
+
+/// Whether `stored` is an encrypted value (as opposed to plain text typed into the file).
+pub fn is_sealed(stored: &str) -> bool {
+    SEALED_PREFIXES.iter().any(|p| stored.starts_with(p))
+}
 
 /// A password or other credential.
 #[derive(Clone)]
@@ -64,13 +107,16 @@ impl Secret {
     /// Parses a value as stored in the config file. Never fails: an undecryptable value becomes
     /// a locked secret (see [`Secret::locked_reason`]).
     pub fn from_stored(stored: &str) -> Self {
-        let Some(encoded) = stored.strip_prefix(DPAPI_PREFIX) else {
+        Self::from_stored_with(stored, installed())
+    }
+
+    fn from_stored_with(stored: &str, store: Option<&dyn SecretStore>) -> Self {
+        if !is_sealed(stored) {
             return Self::new(stored);
-        };
-        match BASE64
-            .decode(encoded.trim())
-            .map_err(SecretError::from)
-            .and_then(|blob| dpapi::unprotect(&blob))
+        }
+        match store
+            .ok_or(SecretError::NoStore)
+            .and_then(|s| s.unseal(stored))
         {
             Ok(plain) => Self(Inner::Plain(plain)),
             Err(err) => {
@@ -83,13 +129,14 @@ impl Secret {
         }
     }
 
-    /// The value to write to the config file: `dpapi:<base64>`.
+    /// The value to write to the config file, for example `dpapi:<base64>`.
     pub fn to_stored(&self) -> Result<String, SecretError> {
+        self.to_stored_with(installed())
+    }
+
+    fn to_stored_with(&self, store: Option<&dyn SecretStore>) -> Result<String, SecretError> {
         match &self.0 {
-            Inner::Plain(plain) => {
-                let blob = dpapi::protect(plain.as_bytes())?;
-                Ok(format!("{DPAPI_PREFIX}{}", BASE64.encode(blob)))
-            }
+            Inner::Plain(plain) => store.ok_or(SecretError::NoStore)?.seal(plain),
             Inner::Locked { stored, .. } => Ok(stored.clone()),
         }
     }
@@ -104,7 +151,7 @@ impl fmt::Debug for Secret {
     }
 }
 
-/// Compares the decrypted values. DPAPI output is randomized, so the stored form can't be
+/// Compares the decrypted values. Encryption is randomized, so the stored form can't be
 /// compared.
 impl PartialEq for Secret {
     fn eq(&self, other: &Self) -> bool {
@@ -132,113 +179,54 @@ impl<'de> Deserialize<'de> for Secret {
     }
 }
 
-#[cfg(windows)]
-mod dpapi {
-    use std::io;
-
-    use windows::Win32::Foundation::{HLOCAL, LocalFree};
-    use windows::Win32::Security::Cryptography::{
-        CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
-    };
-    use windows::core::PCWSTR;
+/// A stand-in store for this crate's tests: reversible, randomized, no OS involved.
+#[cfg(test)]
+pub(crate) mod test_store {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
     use zeroize::Zeroizing;
 
-    use super::ENTROPY;
+    use super::{KEYFILE_PREFIX, SecretStore};
     use crate::error::SecretError;
 
-    fn blob(data: &[u8]) -> CRYPT_INTEGER_BLOB {
-        CRYPT_INTEGER_BLOB {
-            cbData: data.len() as u32,
-            pbData: data.as_ptr().cast_mut(),
+    /// Stores `keyfile:<base64(salt + reversed text)>`.
+    pub(crate) struct Reversing;
+
+    impl SecretStore for Reversing {
+        fn seal(&self, plain: &str) -> Result<String, SecretError> {
+            let mut bytes = vec![rand::random::<u8>()];
+            bytes.extend(plain.bytes().rev());
+            Ok(format!("{KEYFILE_PREFIX}{}", BASE64.encode(bytes)))
+        }
+
+        fn unseal(&self, stored: &str) -> Result<Zeroizing<String>, SecretError> {
+            let encoded = stored
+                .strip_prefix(KEYFILE_PREFIX)
+                .ok_or_else(|| SecretError::Unreadable("not a test value".into()))?;
+            let bytes = BASE64.decode(encoded)?;
+            let text: Vec<u8> = bytes.iter().skip(1).rev().copied().collect();
+            Ok(Zeroizing::new(
+                String::from_utf8(text).map_err(|_| SecretError::Utf8)?,
+            ))
         }
     }
 
-    /// Copies a DPAPI output blob into a `Vec` and frees the original with `LocalFree`.
-    ///
-    /// # Safety
-    /// `out` must have been filled in by a successful `CryptProtectData`/`CryptUnprotectData`.
-    unsafe fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-        // SAFETY: on success DPAPI hands back a valid buffer of `cbData` bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize) }.to_vec();
-        // SAFETY: the buffer was allocated by DPAPI with LocalAlloc and is not used again.
-        unsafe { LocalFree(Some(HLOCAL(out.pbData.cast()))) };
-        bytes
-    }
-
-    fn dpapi_err(op: &'static str, err: windows::core::Error) -> SecretError {
-        SecretError::Dpapi {
-            op,
-            source: io::Error::from_raw_os_error(err.code().0),
-        }
-    }
-
-    pub(super) fn protect(plain: &[u8]) -> Result<Vec<u8>, SecretError> {
-        let input = blob(plain);
-        let entropy = blob(ENTROPY);
-        let mut out = CRYPT_INTEGER_BLOB::default();
-        // SAFETY: all pointers are valid for the duration of the call; `out` is freed in `take`.
-        unsafe {
-            CryptProtectData(
-                &input,
-                PCWSTR::null(),
-                Some(&entropy),
-                None,
-                None,
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut out,
-            )
-            .map_err(|e| dpapi_err("encrypt", e))?;
-            Ok(take(out))
-        }
-    }
-
-    pub(super) fn unprotect(encrypted: &[u8]) -> Result<Zeroizing<String>, SecretError> {
-        let input = blob(encrypted);
-        let entropy = blob(ENTROPY);
-        let mut out = CRYPT_INTEGER_BLOB::default();
-        // SAFETY: as in `protect`.
-        let plain = Zeroizing::new(unsafe {
-            CryptUnprotectData(
-                &input,
-                None,
-                Some(&entropy),
-                None,
-                None,
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut out,
-            )
-            .map_err(|e| dpapi_err("decrypt", e))?;
-            take(out)
-        });
-        let text = std::str::from_utf8(&plain).map_err(|_| SecretError::Utf8)?;
-        Ok(Zeroizing::new(text.to_owned()))
+    /// Installs [`Reversing`] for the whole test binary (the first call wins).
+    pub(crate) fn install() {
+        super::install_store(Box::new(Reversing));
     }
 }
 
-#[cfg(not(windows))]
-mod dpapi {
-    use zeroize::Zeroizing;
-
-    use crate::error::SecretError;
-
-    pub(super) fn protect(_plain: &[u8]) -> Result<Vec<u8>, SecretError> {
-        Err(SecretError::Unsupported)
-    }
-
-    pub(super) fn unprotect(_encrypted: &[u8]) -> Result<Zeroizing<String>, SecretError> {
-        Err(SecretError::Unsupported)
-    }
-}
-
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn dpapi_round_trip() {
+    fn round_trip() {
+        test_store::install();
         let secret = Secret::new("hunter2 – ünïcödé");
         let stored = secret.to_stored().unwrap();
-        assert!(stored.starts_with(DPAPI_PREFIX));
+        assert!(is_sealed(&stored));
         assert!(!stored.contains("hunter2"));
 
         let back = Secret::from_stored(&stored);
@@ -247,25 +235,46 @@ mod tests {
     }
 
     #[test]
-    fn encryption_is_randomized() {
-        let secret = Secret::new("same");
-        assert_ne!(secret.to_stored().unwrap(), secret.to_stored().unwrap());
-    }
-
-    #[test]
     fn plain_text_is_accepted_and_encrypted_on_save() {
+        test_store::install();
         let secret = Secret::from_stored("typed-by-hand");
         assert_eq!(secret.expose(), Some("typed-by-hand"));
-        assert!(secret.to_stored().unwrap().starts_with(DPAPI_PREFIX));
+        assert!(is_sealed(&secret.to_stored().unwrap()));
     }
 
     #[test]
     fn garbage_becomes_locked_and_is_preserved() {
-        let stored = "dpapi:AAAAAAAA";
+        test_store::install();
+        let stored = "keyfile:!!!not base64";
         let secret = Secret::from_stored(stored);
         assert_eq!(secret.expose(), None);
         assert!(secret.locked_reason().is_some());
         assert_eq!(secret.to_stored().unwrap(), stored);
+    }
+
+    #[test]
+    fn other_platforms_values_are_locked_not_plain() {
+        test_store::install();
+        // A DPAPI value read where only the test store exists: kept, not used as a password.
+        let secret = Secret::from_stored("dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA");
+        assert_eq!(secret.expose(), None);
+        assert_eq!(
+            secret.to_stored().unwrap(),
+            "dpapi:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAA"
+        );
+    }
+
+    #[test]
+    fn without_a_store_secrets_lock_and_saving_fails_clearly() {
+        let secret = Secret::from_stored_with("keyring:AAAA", None);
+        assert!(secret.locked_reason().unwrap().contains("no secret store"));
+        let err = Secret::new("pw").to_stored_with(None).unwrap_err();
+        assert!(matches!(err, SecretError::NoStore), "{err}");
+        // Plain text needs no store to read.
+        assert_eq!(
+            Secret::from_stored_with("typed", None).expose(),
+            Some("typed")
+        );
     }
 
     #[test]
@@ -276,8 +285,9 @@ mod tests {
 
     #[test]
     fn serde_round_trip() {
+        test_store::install();
         let json = serde_json::to_string(&Secret::new("pw")).unwrap();
-        assert!(json.starts_with("\"dpapi:"));
+        assert!(json.starts_with("\"keyfile:"));
         let back: Secret = serde_json::from_str(&json).unwrap();
         assert_eq!(back.expose(), Some("pw"));
     }

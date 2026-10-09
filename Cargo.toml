@@ -5,21 +5,27 @@ members = ["crates/*"]
 [workspace.package]
 version = "1.0.1"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.92"
 publish = false
 
 [workspace.dependencies]
 # Internal crates
 rtspcam-core = { path = "crates/rtspcam-core", default-features = false }
+rtspcam-engine = { path = "crates/rtspcam-engine" }
 rtspcam-ipc = { path = "crates/rtspcam-ipc" }
 rtspcam-onvif = { path = "crates/rtspcam-onvif" }
-rtspcam-pipeline = { path = "crates/rtspcam-pipeline" }
+# Off here so rtspcam-platform can leave out the OpenH264 build; the app, CLI and engine turn
+# the defaults on.
+rtspcam-pipeline = { path = "crates/rtspcam-pipeline", default-features = false }
+rtspcam-platform = { path = "crates/rtspcam-platform" }
 rtspcam-vcam-mgr = { path = "crates/rtspcam-vcam-mgr" }
 
 # External crates
+ab_glyph = "0.2"
 anyhow = "1"
 base64 = "0.22"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.5", features = ["derive"] }
 directories = "6"
 futures = "0.3"

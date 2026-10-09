@@ -52,14 +52,15 @@ fn assert_streams(rt: &Runtime, url: &str, decoder: DecoderChoice, size: (u32, u
     p.stop();
 }
 
+/// The platform decoders are not installed in this test binary, so `Auto` means OpenH264 here
+/// (`rtspcam-platform` runs the same streams through Media Foundation on Windows).
 #[test]
-fn streams_h264_with_both_decoders() {
+fn streams_h264() {
     let Some(server) = common::server() else {
         return;
     };
     let rt = Runtime::new().unwrap();
     let url = common::url(&server, "h264-720p");
-    assert_streams(&rt, &url, DecoderChoice::MediaFoundation, (1280, 720));
     assert_streams(&rt, &url, DecoderChoice::OpenH264, (1280, 720));
     assert_streams(
         &rt,
@@ -75,8 +76,8 @@ fn streams_h264_with_both_decoders() {
     );
 }
 
-/// H.265 needs Microsoft's "HEVC Video Extensions" (or a hardware decoder exposed as a
-/// synchronous MFT). Without them the pipeline must report `DecoderUnavailable`.
+/// Only platform decoders handle H.265 (on Windows with Microsoft's "HEVC Video Extensions").
+/// Without one the pipeline must report `DecoderUnavailable`.
 #[test]
 fn h265_streams_or_reports_missing_decoder() {
     let Some(server) = common::server() else {

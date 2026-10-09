@@ -162,7 +162,11 @@ fn shows_app_frames_and_follows_format_changes() {
     init();
     let camera = Uuid::new_v4();
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let server = rt.spawn(serve(camera, Arc::new(Counter::default())));
+    let listener = {
+        let _enter = rt.enter();
+        rtspcam_platform::frame_transport().listen(camera).unwrap()
+    };
+    let server = rt.spawn(serve(listener, Arc::new(Counter::default())));
     std::thread::sleep(Duration::from_millis(100));
 
     let (source, reader) = open(camera);

@@ -398,7 +398,11 @@ fn add(store: &ConfigStore, args: AddArgs) -> anyhow::Result<ExitCode> {
             (id, Arc::new(source), Some(pipeline), preferred)
         };
 
-    let server = rt.spawn(serve(id, source));
+    let listener = {
+        let _enter = rt.enter();
+        rtspcam_platform::frame_transport().listen(id)?
+    };
+    let server = rt.spawn(serve(listener, source));
     let camera = VirtualCamera::create(&args.name, id, preferred)?;
     println!(
         "camera \"{}\" created (stream id {id}). Open it in the Camera app, OBS or Discord.",
@@ -444,7 +448,11 @@ fn test(args: TestArgs) -> anyhow::Result<ExitCode> {
         let source = BusSource::new(bus, FitMode::Stretch, || {
             (StreamStatus::Streaming, String::new())
         });
-        rt.spawn(serve(camera, Arc::new(source)));
+        let listener = {
+            let _enter = rt.enter();
+            rtspcam_platform::frame_transport().listen(camera)?
+        };
+        rt.spawn(serve(listener, Arc::new(source)));
     }
 
     type GetClassObject =

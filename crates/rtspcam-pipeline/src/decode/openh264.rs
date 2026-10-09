@@ -1,4 +1,5 @@
-//! Cisco OpenH264 software decoder: the H.264 fallback when Media Foundation isn't usable.
+//! Cisco OpenH264 software decoder: H.264 on every OS, and the fallback when the platform's
+//! decoder isn't usable.
 
 use openh264::formats::YUVSource as _;
 

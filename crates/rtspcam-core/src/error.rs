@@ -16,8 +16,11 @@ pub enum SecretError {
     Base64(#[from] base64::DecodeError),
     #[error("decrypted secret is not valid UTF-8")]
     Utf8,
-    #[error("DPAPI is only available on Windows")]
-    Unsupported,
+    #[error("no secret store is set up in this program")]
+    NoStore,
+    /// The store could not encrypt or decrypt the value; the text says why.
+    #[error("{0}")]
+    Unreadable(String),
 }
 
 /// Errors from loading, saving or watching the configuration file.

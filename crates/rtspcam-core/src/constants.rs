@@ -2,7 +2,8 @@
 
 use uuid::Uuid;
 
-/// Folder name used under `%APPDATA%`, `%LOCALAPPDATA%` and `C:\Program Files`.
+/// Folder name used under the per-user config and data folders (see [`crate::paths`]) and
+/// under `C:\Program Files`.
 pub const APP_DIR_NAME: &str = "RtspCam";
 
 /// Human-readable product name.

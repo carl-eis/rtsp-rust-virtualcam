@@ -4,12 +4,15 @@
 //! - `probe`, `view`: connect to RTSP streams and decode them without the app.
 //!
 //! - `onvif`: find ONVIF cameras and list their streams.
-//! - `vcam`: register the media source DLL, create and list virtual cameras, test the DLL.
+//! - `vcam` (Windows only): register the media source DLL, create and list virtual cameras,
+//!   test the DLL.
 
 #![allow(clippy::print_stdout)]
 
 mod onvif;
 mod rtsp;
+// The media source DLL and Media Foundation cameras exist only on Windows.
+#[cfg(windows)]
 mod vcam;
 
 use std::path::PathBuf;
@@ -25,7 +28,7 @@ use serde_json::Value;
 #[derive(Parser)]
 #[command(version, about = "RTSP Cam developer tool")]
 struct Cli {
-    /// Use this config file instead of %APPDATA%\RtspCam\config.json.
+    /// Use this config file instead of the user's config.json (`config path` shows it).
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 
@@ -49,7 +52,8 @@ enum Command {
     /// Find ONVIF cameras and list their streams.
     #[command(subcommand)]
     Onvif(onvif::OnvifCommand),
-    /// Virtual cameras: register the DLL, create test cameras, list them.
+    /// Virtual cameras: register the DLL, create test cameras, list them (Windows only).
+    #[cfg(windows)]
     #[command(subcommand)]
     Vcam(vcam::VcamCommand),
 }
@@ -108,17 +112,21 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         LogLevel::Warn
     };
     let _log = logging::init(&log_opts)?;
+    // Passwords in the config, and the OS's video decoders.
+    rtspcam_platform::install();
 
     let store = match cli.config {
         Some(path) => ConfigStore::new(path),
         None => ConfigStore::open_default()?,
-    };
+    }
+    .with_replacer(rtspcam_platform::file_replacer());
 
     match cli.command {
         Command::Config(cmd) => config_command(&store, cmd),
         Command::Probe(args) => rtsp::probe(&store, args),
         Command::View(args) => rtsp::view(&store, args),
         Command::Onvif(cmd) => onvif::run(&store, cmd),
+        #[cfg(windows)]
         Command::Vcam(cmd) => vcam::run(&store, cmd),
     }
 }

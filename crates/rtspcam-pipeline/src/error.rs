@@ -45,10 +45,8 @@ impl ErrorKind {
             }
             Self::Timeout => "The camera didn't respond in time. Check the address and network.",
             Self::UnsupportedCodec => "Set the camera to H.264, H.265 or MJPEG.",
-            Self::DecoderUnavailable => {
-                "For H.265 install \"HEVC Video Extensions\" from the Microsoft Store, \
-                 or switch the camera (or its sub stream) to H.264."
-            }
+            // The platform decoders know what is missing (on Windows: the HEVC extension).
+            Self::DecoderUnavailable => crate::decode::unavailable_hint(),
             Self::Stalled => "The camera stopped sending video.",
             _ => return None,
         })
@@ -113,13 +111,6 @@ impl From<retina::Error> for PipelineError {
         };
         tracing::debug!(error = %full, ?kind, "RTSP error");
         Self::new(kind, first)
-    }
-}
-
-#[cfg(windows)]
-impl From<windows_core::Error> for PipelineError {
-    fn from(e: windows_core::Error) -> Self {
-        Self::new(ErrorKind::Decode, format!("Media Foundation: {e}"))
     }
 }
 

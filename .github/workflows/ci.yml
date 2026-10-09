@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, "feat/**"]
   pull_request:
   workflow_dispatch:
 
@@ -16,17 +16,35 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
+  # OS-specific code belongs in rtspcam-platform (documentation/09-cross-platform-plan.md).
+  os-cfg:
+    name: No OS cfg outside rtspcam-platform
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh tools/ci/check-os-cfg.sh
+
   build:
-    name: Build, lint and test (windows-latest)
-    runs-on: windows-latest
+    name: Build, lint and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       # rustup reads rust-toolchain.toml and installs the pinned channel and components.
       - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        # `rustup show active-toolchain` alone would accept an outdated preinstalled stable.
+        run: rustup update --no-self-update stable && rustup toolchain install && cargo --version
 
       - uses: Swatinem/rust-cache@v2
+
+      # Slint's font lookup (fontique) links fontconfig.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -35,6 +53,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Clippy (DLL dependency set, no default features)
+        if: runner.os == 'Windows'
         run: cargo clippy -p rtspcam-core --no-default-features --locked -- -D warnings
 
       - name: Test
@@ -43,13 +62,41 @@ jobs:
       - name: Build release
         run: cargo build --workspace --release --locked
 
-      - name: Upload binaries
+      - name: Upload binaries (Windows)
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: rtspcam-${{ github.sha }}
+          name: rtspcam-windows-${{ github.sha }}
           if-no-files-found: error
           path: |
             target/release/rtspcam.exe
             target/release/rtspcam-cli.exe
             target/release/rtspcam_vcam.dll
             target/release/*.pdb
+
+      - name: Upload binaries (Linux, macOS)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rtspcam-${{ runner.os }}-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            target/release/rtspcam
+            target/release/rtspcam-cli
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/installer/build.ps1 -SkipBuild
+
+      - name: Upload installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RtspCam-setup-${{ github.sha }}
+          if-no-files-found: error
+          path: installer/out/RtspCam-*-setup.exe

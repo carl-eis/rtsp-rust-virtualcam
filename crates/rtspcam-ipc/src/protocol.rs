@@ -78,8 +78,8 @@ impl VideoFormat {
     fn validate(&self) -> Result<(), ProtocolError> {
         let ok = (2..=MAX_WIDTH).contains(&self.width)
             && (2..=MAX_HEIGHT).contains(&self.height)
-            && self.width % 2 == 0
-            && self.height % 2 == 0
+            && self.width.is_multiple_of(2)
+            && self.height.is_multiple_of(2)
             && (1..=MAX_FPS).contains(&self.fps);
         if ok {
             Ok(())

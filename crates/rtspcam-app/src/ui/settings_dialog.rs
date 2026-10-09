@@ -1,11 +1,13 @@
-//! The Settings dialog.
+//! The Settings dialog: minimize to tray, start at login, log level.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use rtspcam_core::config::AppSettings;
-use rtspcam_core::{LogLevel, constants::APP_DISPLAY_NAME};
-use winsafe::{co, gui, prelude::*};
+use rtspcam_core::LogLevel;
+use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
+
+use super::app::App;
+use super::generated::SettingsDialog;
+use super::message;
 
 const LEVELS: [(&str, LogLevel); 5] = [
     ("Error", LogLevel::Error),
@@ -15,120 +17,72 @@ const LEVELS: [(&str, LogLevel); 5] = [
     ("Trace", LogLevel::Trace),
 ];
 
-#[derive(Clone)]
-pub(crate) struct SettingsDialog {
-    wnd: gui::WindowModal,
-    tray: gui::CheckBox,
-    autostart: gui::CheckBox,
-    level: gui::ComboBox,
-    ok: gui::Button,
-    cancel: gui::Button,
-    result: Rc<RefCell<Option<AppSettings>>>,
-    current: Rc<AppSettings>,
-}
-
-impl SettingsDialog {
-    /// Shows the dialog; returns the new settings if OK was pressed.
-    pub(crate) fn run(parent: &impl GuiParent, current: &AppSettings) -> Option<AppSettings> {
-        let wnd = gui::WindowModal::new(gui::WindowModalOpts {
-            title: &format!("{APP_DISPLAY_NAME} settings"),
-            size: (340, 190),
-            ..Default::default()
-        });
-        let check = |text: &str, y: i32, on: bool| {
-            gui::CheckBox::new(
-                &wnd,
-                gui::CheckBoxOpts {
-                    text,
-                    position: (16, y),
-                    size: (300, 20),
-                    check_state: if on {
-                        co::BST::CHECKED
-                    } else {
-                        co::BST::UNCHECKED
-                    },
-                    ..Default::default()
-                },
-            )
-        };
-        let tray = check("Minimize to tray", 16, current.minimize_to_tray);
-        let autostart = check("Start with Windows", 44, current.start_with_windows);
-        let _ = gui::Label::new(
-            &wnd,
-            gui::LabelOpts {
-                text: "Log level",
-                position: (16, 80),
-                size: (80, 20),
-                ..Default::default()
-            },
-        );
-        let names: Vec<&str> = LEVELS.iter().map(|(n, _)| *n).collect();
-        let selected = LEVELS
+/// Shows the dialog with the current settings.
+pub(crate) fn open(app: &Rc<App>) {
+    let Some(ui) = app.ui() else { return };
+    let d = ui.global::<SettingsDialog>();
+    let current = app.core.config.borrow().settings.clone();
+    d.set_minimize_to_tray(current.minimize_to_tray);
+    d.set_autostart(current.start_with_windows);
+    d.set_autostart_label(app.autostart.label().into());
+    d.set_levels(ModelRc::new(VecModel::from(
+        LEVELS
+            .iter()
+            .map(|(name, _)| SharedString::from(*name))
+            .collect::<Vec<_>>(),
+    )));
+    d.set_level(
+        LEVELS
             .iter()
             .position(|(_, l)| *l == current.log_level)
-            .unwrap_or(2);
-        let level = gui::ComboBox::new(
-            &wnd,
-            gui::ComboBoxOpts {
-                position: (100, 76),
-                width: 120,
-                items: &names,
-                selected_item: Some(selected as u32),
-                ..Default::default()
-            },
-        );
-        let ok = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "OK",
-                position: (150, 126),
-                width: 80,
-                height: 26,
-                control_style: co::BS::DEFPUSHBUTTON,
-                ..Default::default()
-            },
-        );
-        let cancel = gui::Button::new(
-            &wnd,
-            gui::ButtonOpts {
-                text: "Cancel",
-                position: (238, 126),
-                width: 80,
-                height: 26,
-                ..Default::default()
-            },
-        );
-        let dlg = Self {
-            wnd,
-            tray,
-            autostart,
-            level,
-            ok,
-            cancel,
-            result: Rc::default(),
-            current: Rc::new(current.clone()),
-        };
-        dlg.events();
-        dlg.wnd.show_modal(parent).ok()?;
-        dlg.result.take()
-    }
+            .unwrap_or(2) as i32,
+    );
+    d.set_open(true);
+}
 
-    fn events(&self) {
-        let me = self.clone();
-        self.ok.on().bn_clicked(move || {
-            let mut s = (*me.current).clone();
-            s.minimize_to_tray = me.tray.is_checked();
-            s.start_with_windows = me.autostart.is_checked();
-            let index = me.level.items().selected_index().unwrap_or(2) as usize;
-            s.log_level = LEVELS.get(index).map_or(s.log_level, |(_, l)| *l);
-            *me.result.borrow_mut() = Some(s);
-            me.wnd.close();
-            Ok(())
-        });
-        let me = self.clone();
-        self.cancel.on().bn_clicked(move || {
-            me.wnd.close();
-            Ok(())
-        });
+fn apply(app: &Rc<App>) {
+    let Some(ui) = app.ui() else { return };
+    let d = ui.global::<SettingsDialog>();
+    d.set_open(false);
+    let mut config = app.core.config.borrow().clone();
+    let current = config.settings.clone();
+    let mut settings = current.clone();
+    settings.minimize_to_tray = d.get_minimize_to_tray();
+    settings.start_with_windows = d.get_autostart();
+    settings.log_level = usize::try_from(d.get_level())
+        .ok()
+        .and_then(|i| LEVELS.get(i))
+        .map_or(current.log_level, |(_, l)| *l);
+
+    let autostart_failed = (settings.start_with_windows != current.start_with_windows)
+        .then(|| app.autostart.set(settings.start_with_windows).err())
+        .flatten();
+    config.settings = settings;
+    if app.save(config)
+        && let Some(e) = autostart_failed
+    {
+        message::inform(
+            app,
+            "Settings",
+            &format!("Could not change \"{}\": {e}", app.autostart.label()),
+        );
     }
+}
+
+/// Wires the sheet's callbacks. Called once.
+pub(crate) fn connect(app: &Rc<App>) {
+    let Some(ui) = app.ui() else { return };
+    let d = ui.global::<SettingsDialog>();
+    let me = Rc::downgrade(app);
+    d.on_ok(move || {
+        if let Some(app) = me.upgrade() {
+            apply(&app);
+        }
+    });
+    let me = Rc::downgrade(app);
+    d.on_cancel(move || {
+        if let Some(ui) = me.upgrade().and_then(|app| app.ui()) {
+            ui.global::<SettingsDialog>().set_open(false);
+        }
+    });
 }

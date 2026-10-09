@@ -12,13 +12,17 @@ run = [
   "cargo clippy --workspace --all-targets --locked -- -D warnings",
 ]
 
+[tasks.os-cfg]
+description = "Fail if an OS cfg appears outside rtspcam-platform (like CI)"
+run = "sh tools/ci/check-os-cfg.sh"
+
 [tasks.test]
 description = "Run all unit tests"
 run = "cargo test --workspace --locked"
 
 [tasks.ci]
 description = "Everything CI runs"
-depends = ["lint", "test"]
+depends = ["lint", "os-cfg", "test"]
 run = "cargo build --workspace --release --locked"
 
 [tasks.rtsp]

@@ -20,7 +20,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        # `rustup show active-toolchain` alone would accept an outdated preinstalled stable.
+        run: rustup update --no-self-update stable && rustup toolchain install && cargo --version
 
       - uses: Swatinem/rust-cache@v2
 
