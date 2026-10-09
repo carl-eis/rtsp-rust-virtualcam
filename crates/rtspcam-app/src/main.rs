@@ -1,25 +1,26 @@
-//! `rtspcam.exe`.
+//! `rtspcam` (`rtspcam.exe` on Windows).
 //!
 //! Opens the window (and tray icon) and runs the cameras until the user quits. `--headless`
 //! runs the cameras without a window, for services-style use and for tests. `--minimized`
 //! starts hidden in the tray (or minimized, if "Minimize to tray" is off); it is what the
-//! "Start with Windows" entry passes.
+//! "start at login" entry (Start with Windows, an XDG autostart entry or a LaunchAgent) passes.
+
+// Windows only (ignored elsewhere): a release build is a windowed program without a console.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod ui;
 
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use rtspcam_app::ui;
 use rtspcam_core::config::ConfigStore;
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::logging::{self, LogOptions};
 use rtspcam_core::paths;
 use rtspcam_engine::{CameraManager, ManagerOptions};
 use rtspcam_platform::{CameraError, Instance};
-use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-use windows::core::HSTRING;
 
 /// Quitting must end the process within this long, whatever is stuck.
 const SHUTDOWN_LIMIT: Duration = Duration::from_secs(3);
@@ -33,15 +34,7 @@ fn main() -> ExitCode {
             tracing::error!(error = %format!("{e:#}"), "fatal error");
             eprintln!("{APP_DISPLAY_NAME}: {e:#}");
             // A windowed app has no console to print to.
-            // SAFETY: a plain message box with owned strings.
-            unsafe {
-                MessageBoxW(
-                    None,
-                    &HSTRING::from(format!("{e:#}")),
-                    &HSTRING::from(APP_DISPLAY_NAME),
-                    MB_OK | MB_ICONERROR,
-                );
-            }
+            ui::fatal_error(&format!("{e:#}"));
             ExitCode::FAILURE
         }
     }
@@ -93,20 +86,28 @@ fn run() -> anyhow::Result<ExitCode> {
         tracing::warn!(%issue, "invalid stream configuration");
     }
 
-    if let Err(CameraError::Unsupported(why)) = backend.check() {
-        tracing::info!("{why}; streams preview but don't become cameras");
-    }
+    let cameras_supported = match backend.check() {
+        Err(CameraError::Unsupported(why)) => {
+            tracing::info!("{why}; streams preview but don't become cameras");
+            false
+        }
+        _ => true,
+    };
     let manager = CameraManager::start(backend, ManagerOptions::default())?;
     if headless {
         run_headless(&store, &config, manager)?;
         return Ok(ExitCode::SUCCESS);
     }
-    let code = ui::run(store, config, manager, instance, minimized)?;
-    Ok(if code == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    ui::run(ui::RunOptions {
+        store,
+        config,
+        manager,
+        instance,
+        autostart: rtspcam_platform::autostart(),
+        cameras_supported,
+        start_minimized: minimized,
+    })?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn run_headless(

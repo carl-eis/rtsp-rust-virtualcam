@@ -6,40 +6,38 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[lib]
-name = "rtspcam_app"
-path = "src/lib.rs"
-
 [[bin]]
 name = "rtspcam"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+rfd = "0.17"
 rtspcam-core = { workspace = true, default-features = true }
 rtspcam-engine.workspace = true
-rtspcam-ipc.workspace = true
 rtspcam-onvif.workspace = true
 rtspcam-pipeline.workspace = true
 rtspcam-platform.workspace = true
+# The winit backend (with OpenGL and software renderers, so a machine without usable OpenGL
+# still gets a window), the tray icon, and the window handle for parenting file dialogs. No Qt.
+# `unstable-winit-030` is for bringing the window to the front; it ties us to this minor version.
+slint = { version = "~1.18", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+    "system-tray",
+    "raw-window-handle-06",
+    "unstable-winit-030",
+] }
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
-url.workspace = true
 uuid.workspace = true
-winsafe = { version = "0.0.29", features = ["gui", "shell"] }
-
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_LibraryLoader",
-    "Win32_System_SystemInformation",
-] }
-windows-core.workspace = true
 
 [build-dependencies]
+slint-build = "~1.18"
 winresource = "0.1"
 
 [lints]

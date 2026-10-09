@@ -1,0 +1,678 @@
+// The dialogs. Each has a global with its state and callbacks (filled in and handled by the
+// Rust code in src/ui/), and a sheet that draws it. Validation lives in rtspcam-engine, not here.
+
+import { Button, CheckBox, ComboBox, LineEdit, StandardTableView } from "std-widgets.slint";
+import { ErrorText, Label, Row, Sheet } from "common.slint";
+
+// ----- Add / Edit stream -----
+
+export global StreamDialog {
+    in-out property <bool> open;
+    in-out property <string> title;
+    in-out property <string> paste;
+    in property <[string]> brands;
+    in-out property <int> brand;
+    in-out property <string> name;
+    in-out property <string> host;
+    in-out property <string> port;
+    in-out property <string> path;
+    in-out property <string> username;
+    in-out property <string> password;
+    in-out property <bool> show-password;
+    in property <[string]> transports;
+    in-out property <int> transport;
+    in property <[string]> resolutions;
+    in-out property <int> resolution;
+    in property <[string]> frame-rates;
+    in-out property <int> frame-rate;
+    in property <[string]> fits;
+    in-out property <int> fit;
+    in-out property <bool> on-demand;
+    in-out property <bool> enabled;
+    in property <string> error;
+    in property <bool> ok-enabled;
+    in property <bool> testing;
+    in property <string> test-text;
+    in property <image> thumbnail;
+    // Any field changed: validate again.
+    callback changed();
+    // Split the pasted URL into the fields.
+    callback fill();
+    callback brand-chosen(int);
+    callback picture();
+    callback test();
+    callback ok();
+    callback cancel();
+}
+
+export component StreamSheet inherits Sheet {
+    title: StreamDialog.title;
+    panel-width: 780px;
+    cancel => {
+        StreamDialog.cancel();
+    }
+
+    Row {
+        label: "Paste full URL";
+        LineEdit {
+            text <=> StreamDialog.paste;
+            placeholder-text: "rtsp://user:password@host:port/path";
+            accepted => {
+                StreamDialog.fill();
+            }
+        }
+
+        Button {
+            text: "Fill";
+            clicked => {
+                StreamDialog.fill();
+            }
+        }
+    }
+
+    Row {
+        label: "Camera brand";
+        ComboBox {
+            model: StreamDialog.brands;
+            current-index <=> StreamDialog.brand;
+            selected => {
+                StreamDialog.brand-chosen(self.current-index);
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 24px;
+        VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+            horizontal-stretch: 1;
+            Row {
+                label: "Name";
+                LineEdit {
+                    text <=> StreamDialog.name;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Protocol";
+                // Only RTSP for now; the box keeps the layout stable for later protocols.
+                ComboBox {
+                    model: ["RTSP"];
+                    enabled: false;
+                }
+            }
+
+            Row {
+                label: "IP address / host";
+                LineEdit {
+                    text <=> StreamDialog.host;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Port";
+                LineEdit {
+                    text <=> StreamDialog.port;
+                    input-type: number;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Path";
+                LineEdit {
+                    text <=> StreamDialog.path;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "User name";
+                LineEdit {
+                    text <=> StreamDialog.username;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Password";
+                LineEdit {
+                    text <=> StreamDialog.password;
+                    input-type: StreamDialog.show-password ? InputType.text : InputType.password;
+                    edited => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "";
+                CheckBox {
+                    text: "Show password";
+                    checked <=> StreamDialog.show-password;
+                }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+            horizontal-stretch: 1;
+            Row {
+                label: "Transport";
+                ComboBox {
+                    model: StreamDialog.transports;
+                    current-index <=> StreamDialog.transport;
+                    selected => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Resolution";
+                ComboBox {
+                    model: StreamDialog.resolutions;
+                    current-index <=> StreamDialog.resolution;
+                    selected => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Frame rate";
+                ComboBox {
+                    model: StreamDialog.frame-rates;
+                    current-index <=> StreamDialog.frame-rate;
+                    selected => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "Fit";
+                ComboBox {
+                    model: StreamDialog.fits;
+                    current-index <=> StreamDialog.fit;
+                    selected => {
+                        StreamDialog.changed();
+                    }
+                }
+
+                Button {
+                    text: "Picture...";
+                    clicked => {
+                        StreamDialog.picture();
+                    }
+                }
+            }
+
+            Row {
+                label: "";
+                CheckBox {
+                    text: "On demand (connect only when used)";
+                    checked <=> StreamDialog.on-demand;
+                    toggled => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            Row {
+                label: "";
+                CheckBox {
+                    text: "Enabled";
+                    checked <=> StreamDialog.enabled;
+                    toggled => {
+                        StreamDialog.changed();
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: start;
+                    Button {
+                        text: "Test connection";
+                        enabled: !StreamDialog.testing;
+                        clicked => {
+                            StreamDialog.test();
+                        }
+                    }
+                }
+
+                Label {
+                    text: StreamDialog.test-text;
+                    wrap: word-wrap;
+                    vertical-alignment: top;
+                    horizontal-stretch: 1;
+                    min-height: 63px;
+                }
+
+                Rectangle {
+                    width: 112px;
+                    height: 63px;
+                    background: #181818;
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: StreamDialog.thumbnail;
+                        image-fit: contain;
+                    }
+                }
+            }
+        }
+    }
+
+    ErrorText {
+        text: StreamDialog.error;
+        min-height: 34px;
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Button {
+            text: "OK";
+            primary: true;
+            enabled: StreamDialog.ok-enabled;
+            clicked => {
+                StreamDialog.ok();
+            }
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => {
+                StreamDialog.cancel();
+            }
+        }
+    }
+}
+
+// ----- Find cameras (ONVIF) -----
+
+export global DiscoverDialog {
+    in-out property <bool> open;
+    in property <[[StandardListViewItem]]> devices;
+    in-out property <int> device: -1;
+    in-out property <string> address;
+    in-out property <string> username;
+    in-out property <string> password;
+    in property <string> status;
+    in property <bool> scanning;
+    in property <bool> querying;
+    in property <[string]> streams;
+    in-out property <int> stream;
+    in property <bool> add-enabled;
+    callback scan();
+    callback device-selected(int);
+    callback query();
+    callback add();
+    callback cancel();
+}
+
+export component DiscoverSheet inherits Sheet {
+    title: "Find cameras";
+    panel-width: 600px;
+    cancel => {
+        DiscoverDialog.cancel();
+    }
+
+    HorizontalLayout {
+        Label {
+            text: "ONVIF cameras on your network";
+            horizontal-stretch: 1;
+        }
+
+        Button {
+            text: "Scan again";
+            enabled: !DiscoverDialog.scanning;
+            clicked => {
+                DiscoverDialog.scan();
+            }
+        }
+    }
+
+    StandardTableView {
+        height: 150px;
+        columns: [{ title: "Camera", width: 300px }, { title: "Address", width: 230px }];
+        rows: DiscoverDialog.devices;
+        current-row <=> DiscoverDialog.device;
+        current-row-changed(row) => {
+            DiscoverDialog.device-selected(row);
+        }
+    }
+
+    Row {
+        label: "Camera address";
+        LineEdit {
+            text <=> DiscoverDialog.address;
+        }
+    }
+
+    Row {
+        label: "User name";
+        LineEdit {
+            text <=> DiscoverDialog.username;
+        }
+
+        Label {
+            text: "Password";
+        }
+
+        LineEdit {
+            text <=> DiscoverDialog.password;
+            input-type: password;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        Button {
+            text: "Get streams";
+            enabled: !DiscoverDialog.querying;
+            clicked => {
+                DiscoverDialog.query();
+            }
+        }
+
+        Label {
+            text: DiscoverDialog.status;
+            wrap: word-wrap;
+            horizontal-stretch: 1;
+        }
+    }
+
+    Row {
+        label: "Stream";
+        ComboBox {
+            model: DiscoverDialog.streams;
+            enabled: DiscoverDialog.streams.length > 0;
+            current-index <=> DiscoverDialog.stream;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Button {
+            text: "Add...";
+            primary: true;
+            enabled: DiscoverDialog.add-enabled;
+            clicked => {
+                DiscoverDialog.add();
+            }
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => {
+                DiscoverDialog.cancel();
+            }
+        }
+    }
+}
+
+// ----- Picture: rotate, flip, crop, text, what to show when the stream drops -----
+
+export global PictureDialog {
+    in-out property <bool> open;
+    in property <[string]> rotations;
+    in-out property <int> rotation;
+    in-out property <bool> flip-horizontal;
+    in-out property <bool> flip-vertical;
+    in property <int> max-crop;
+    in-out property <string> crop-left;
+    in-out property <string> crop-top;
+    in-out property <string> crop-right;
+    in-out property <string> crop-bottom;
+    in-out property <bool> show-name;
+    in-out property <bool> show-time;
+    in property <[string]> disconnects;
+    in-out property <int> disconnect;
+    in property <string> error;
+    callback ok();
+    callback cancel();
+}
+
+component CropEdge inherits VerticalLayout {
+    in property <string> label;
+    in-out property <string> value;
+    spacing: 4px;
+    Label {
+        text: root.label;
+    }
+
+    LineEdit {
+        // Fluent's line edit asks for much more width than a percentage needs.
+        width: 80px;
+        text <=> root.value;
+        input-type: number;
+    }
+}
+
+export component PictureSheet inherits Sheet {
+    title: "Picture";
+    panel-width: 440px;
+    cancel => {
+        PictureDialog.cancel();
+    }
+
+    Row {
+        label: "Rotate";
+        ComboBox {
+            model: PictureDialog.rotations;
+            current-index <=> PictureDialog.rotation;
+        }
+    }
+
+    Row {
+        label: "";
+        CheckBox {
+            text: "Flip horizontally";
+            checked <=> PictureDialog.flip-horizontal;
+        }
+    }
+
+    Row {
+        label: "";
+        CheckBox {
+            text: "Flip vertically";
+            checked <=> PictureDialog.flip-vertical;
+        }
+    }
+
+    Label {
+        text: "Crop (percent of each side, 0 to \{PictureDialog.max-crop})";
+    }
+
+    HorizontalLayout {
+        spacing: 12px;
+        CropEdge {
+            label: "Left";
+            value <=> PictureDialog.crop-left;
+        }
+
+        CropEdge {
+            label: "Top";
+            value <=> PictureDialog.crop-top;
+        }
+
+        CropEdge {
+            label: "Right";
+            value <=> PictureDialog.crop-right;
+        }
+
+        CropEdge {
+            label: "Bottom";
+            value <=> PictureDialog.crop-bottom;
+        }
+    }
+
+    CheckBox {
+        text: "Show the stream name";
+        checked <=> PictureDialog.show-name;
+    }
+
+    CheckBox {
+        text: "Show date and time";
+        checked <=> PictureDialog.show-time;
+    }
+
+    Row {
+        label: "When the stream drops";
+        label-width: 150px;
+        ComboBox {
+            model: PictureDialog.disconnects;
+            current-index <=> PictureDialog.disconnect;
+        }
+    }
+
+    ErrorText {
+        text: PictureDialog.error;
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Button {
+            text: "OK";
+            primary: true;
+            clicked => {
+                PictureDialog.ok();
+            }
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => {
+                PictureDialog.cancel();
+            }
+        }
+    }
+}
+
+// ----- Settings -----
+
+export global SettingsDialog {
+    in-out property <bool> open;
+    in-out property <bool> minimize-to-tray;
+    in-out property <bool> autostart;
+    in property <string> autostart-label;
+    in property <[string]> levels;
+    in-out property <int> level;
+    callback ok();
+    callback cancel();
+}
+
+export component SettingsSheet inherits Sheet {
+    title: "RTSP Cam settings";
+    panel-width: 380px;
+    cancel => {
+        SettingsDialog.cancel();
+    }
+
+    CheckBox {
+        text: "Minimize to tray";
+        checked <=> SettingsDialog.minimize-to-tray;
+    }
+
+    CheckBox {
+        text: SettingsDialog.autostart-label;
+        checked <=> SettingsDialog.autostart;
+    }
+
+    Row {
+        label: "Log level";
+        label-width: 80px;
+        ComboBox {
+            model: SettingsDialog.levels;
+            current-index <=> SettingsDialog.level;
+        }
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        Button {
+            text: "OK";
+            primary: true;
+            clicked => {
+                SettingsDialog.ok();
+            }
+        }
+
+        Button {
+            text: "Cancel";
+            clicked => {
+                SettingsDialog.cancel();
+            }
+        }
+    }
+}
+
+// ----- Messages and questions -----
+
+export global MessageDialog {
+    in-out property <bool> open;
+    in property <string> title;
+    in property <string> text;
+    // Yes / No instead of OK.
+    in property <bool> question;
+    callback answer(bool);
+}
+
+export component MessageSheet inherits Sheet {
+    title: MessageDialog.title;
+    panel-width: 460px;
+    cancel => {
+        MessageDialog.answer(false);
+    }
+
+    Label {
+        text: MessageDialog.text;
+        wrap: word-wrap;
+    }
+
+    HorizontalLayout {
+        alignment: end;
+        spacing: 8px;
+        if MessageDialog.question: Button {
+            text: "Yes";
+            primary: true;
+            clicked => {
+                MessageDialog.answer(true);
+            }
+        }
+        if MessageDialog.question: Button {
+            text: "No";
+            clicked => {
+                MessageDialog.answer(false);
+            }
+        }
+        if !MessageDialog.question: Button {
+            text: "OK";
+            primary: true;
+            clicked => {
+                MessageDialog.answer(true);
+            }
+        }
+    }
+}

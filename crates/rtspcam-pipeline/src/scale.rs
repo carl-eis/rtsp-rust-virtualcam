@@ -279,6 +279,18 @@ impl Matrix {
 
 /// Converts an NV12 frame (limited range) to BGRA (alpha 255), `width * 4` bytes per row.
 pub fn nv12_to_bgra(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>) {
+    nv12_to_rgb32(frame, matrix, out, (2, 1, 0));
+}
+
+/// Converts an NV12 frame (limited range) to RGBA (alpha 255), `width * 4` bytes per row: the
+/// layout UI toolkits take.
+pub fn nv12_to_rgba(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>) {
+    nv12_to_rgb32(frame, matrix, out, (0, 1, 2));
+}
+
+/// `order` is where red, green and blue go in each 4-byte pixel; alpha is last.
+fn nv12_to_rgb32(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>, order: (usize, usize, usize)) {
+    let (ri, gi, bi) = order;
     // Coefficients * 256: (Y, V→R, U→G, V→G, U→B).
     let (ky, kvr, kug, kvg, kub) = match matrix {
         Matrix::Bt601 => (298, 409, 100, 208, 516),
@@ -295,9 +307,9 @@ pub fn nv12_to_bgra(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>) {
             let y = (i32::from(y_row[x]) - 16) * ky;
             let u = i32::from(uv_row[x & !1]) - 128;
             let v = i32::from(uv_row[(x & !1) + 1]) - 128;
-            px[0] = clamp8((y + kub * u + 128) >> 8);
-            px[1] = clamp8((y - kug * u - kvg * v + 128) >> 8);
-            px[2] = clamp8((y + kvr * v + 128) >> 8);
+            px[bi] = clamp8((y + kub * u + 128) >> 8);
+            px[gi] = clamp8((y - kug * u - kvg * v + 128) >> 8);
+            px[ri] = clamp8((y + kvr * v + 128) >> 8);
             px[3] = 255;
         }
     }
@@ -431,5 +443,16 @@ mod tests {
         nv12_to_bgra(&solid(2, 2, 63, 102, 240), Matrix::Bt709, &mut out);
         let (b, g, r) = (out[0], out[1], out[2]);
         assert!(r > 250 && g < 5 && b < 5, "{b} {g} {r}");
+    }
+
+    #[test]
+    fn rgba_is_bgra_with_red_and_blue_swapped() {
+        let frame = solid(4, 2, 63, 102, 240);
+        let (mut bgra, mut rgba) = (Vec::new(), Vec::new());
+        nv12_to_bgra(&frame, Matrix::Bt709, &mut bgra);
+        nv12_to_rgba(&frame, Matrix::Bt709, &mut rgba);
+        for (b, r) in bgra.as_chunks::<4>().0.iter().zip(rgba.as_chunks::<4>().0) {
+            assert_eq!([b[2], b[1], b[0], b[3]], *r);
+        }
     }
 }
