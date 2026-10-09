@@ -9,7 +9,7 @@ Phases 2–3 depend on were done as part of them (see §5).
 | Phase | Status |
 |---|---|
 | 1 (leftover) | Test RTSP environment now **verified** (Docker). Two fixes, one known issue (MJPEG relay, §6). |
-| 2 RTSP ingest and decode pipeline | **Done.** Exit criteria met except the full hour (soak in progress at the time of writing, §4.2). |
+| 2 RTSP ingest and decode pipeline | **Done.** Exit criteria met; the 1-hour run showed a slight memory drift to keep an eye on (§4.2). |
 | 3 Virtual camera media source | **Code done and tested in-process.** Not yet verified through Frame Server or in camera apps, which needs the one-time admin install (§4.3). The optional D3D11 path is deferred to Phase 8. |
 
 ## 2. Phase 2 checklist
@@ -115,7 +115,7 @@ All on Windows 11 with the test server in Docker (`bluenviron/mediamtx:latest-ff
 | Criterion | Result |
 |---|---|
 | 4 streams at once | H.264 720p, H.264 1080p, H.265 720p and the credentialed stream, all 30.0 fps, release build. |
-| Stable memory for 1 hour | ~114 MB at the start, ~118 MB after 22 minutes, 0 decode errors, 0 packets lost. **The full hour was still running when this was written.** |
+| Stable memory for 1 hour | Ran the full hour: ~108,000 frames per stream, 0 decode errors, 0 packets lost, no warnings or reconnects. Private bytes 108 MB at 1 min → 114 MB at 40 min → 117 MB at 60 min. Mostly flat, but a slow upward drift (~9 MB/h) that could be allocator fragmentation or a small leak. To recheck with a longer run (Phase 8 soak). |
 | Recovers after the RTSP server restarts | `docker restart` mid-run: all four back within 1–2 s; H.265 took ~8 s (retina rejected joining mid-fragment, "FU has start bit unset", and retried). |
 | < 150 ms pipeline latency | Receive-to-decode: 2–3 ms (H.264, MF), ~9 ms (OpenH264), ~14 ms (H.265). Network/server latency is not included. |
 
