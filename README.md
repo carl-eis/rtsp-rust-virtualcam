@@ -15,6 +15,8 @@ kernel driver is needed. Cameras exist only while the app is running.
 > [implementation plan](documentation/01-plan.md) and the progress records
 > ([2–3](documentation/03-progress-phases-2-3.md), [4–5](documentation/05-progress-phases-4-5.md)).
 
+![RTSP Cam showing a live camera preview and its status](screenshots/main-window.png)
+
 ## Quickstart
 
 Needs the [requirements](#requirements) below (Windows 11, Rust, Visual Studio Build Tools).
