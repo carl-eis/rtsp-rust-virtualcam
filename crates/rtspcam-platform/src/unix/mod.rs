@@ -1,131 +1,57 @@
-//! Shared by Linux and macOS.
-//!
-//! Placeholder until the Linux and macOS services land (step C of
-//! `documentation/09-cross-platform-plan.md`): no secret store, no autostart, no transport,
-//! and every copy of the app is "the first".
+//! Shared by Linux and macOS: keyring-backed secrets, the lock-file single instance and Unix
+//! socket frame transport.
 
-use std::fmt;
+pub(crate) mod instance;
+pub(crate) mod secrets;
+pub(crate) mod transport;
+
+use std::fs;
 use std::io;
-use std::path::Path;
-use std::sync::Arc;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
-use rtspcam_core::SecretError;
-use rtspcam_core::config::{CopyThenRename, FileReplace};
-use rtspcam_ipc::server::FrameListener;
-use uuid::Uuid;
-use zeroize::Zeroizing;
+use rtspcam_core::constants::APP_DIR_NAME;
 
-use crate::camera::UnsupportedCameras;
-use crate::instance::{Instance, InstanceLock};
-use crate::transport::ReadWrite;
-use crate::{Autostart, FrameTransport, SecretStore, SingleInstance, VirtualCameraBackend};
-
-fn not_yet() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        "not available on this platform yet",
-    )
-}
-
-struct NoSecrets;
-
-impl SecretStore for NoSecrets {
-    fn seal(&self, _plain: &str) -> Result<String, SecretError> {
-        Err(SecretError::Unreadable(not_yet().to_string()))
+/// A per-user folder for sockets and lock files, readable only by the user:
+/// `$XDG_RUNTIME_DIR/rtspcam` where that exists (Linux), otherwise `$TMPDIR/rtspcam` on macOS
+/// (per user there) or `~/.local/share/RtspCam/run` on Linux.
+///
+/// Kept short: a Unix socket path must fit in about 100 bytes.
+pub(crate) fn runtime_dir() -> PathBuf {
+    let dirs = directories::BaseDirs::new();
+    if let Some(dir) = dirs.as_ref().and_then(directories::BaseDirs::runtime_dir) {
+        return dir.join("rtspcam");
     }
-
-    fn unseal(&self, _stored: &str) -> Result<Zeroizing<String>, SecretError> {
-        Err(SecretError::Unreadable(not_yet().to_string()))
+    if cfg!(target_os = "macos") {
+        return std::env::temp_dir().join("rtspcam");
+    }
+    match dirs {
+        Some(d) => d.data_local_dir().join(APP_DIR_NAME).join("run"),
+        None => std::env::temp_dir().join("rtspcam"),
     }
 }
 
-struct NoAutostart;
+/// Creates `dir` (and its parents) and makes it private to the user.
+pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
 
-impl Autostart for NoAutostart {
-    fn label(&self) -> &'static str {
-        "Start at login"
+/// The longest socket path the OS takes (`sun_path` is 104 bytes on macOS, 108 on Linux,
+/// including the terminating NUL).
+const MAX_SOCKET_PATH: usize = 103;
+
+/// Fails clearly when `path` is too long to be a Unix socket.
+pub(crate) fn check_socket_path(path: &Path) -> io::Result<()> {
+    if path.as_os_str().len() > MAX_SOCKET_PATH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the socket path {} is too long for this OS; set XDG_RUNTIME_DIR (or TMPDIR) \
+                 to a shorter folder",
+                path.display()
+            ),
+        ));
     }
-
-    fn is_enabled(&self) -> bool {
-        false
-    }
-
-    fn set(&self, _enabled: bool) -> io::Result<()> {
-        Err(not_yet())
-    }
-}
-
-struct AlwaysFirst;
-
-#[derive(Debug)]
-struct NoLock;
-
-impl InstanceLock for NoLock {
-    fn on_show(&mut self, _on_show: Box<dyn Fn() + Send>) {}
-}
-
-impl SingleInstance for AlwaysFirst {
-    fn acquire(&self) -> io::Result<Instance> {
-        Ok(Instance::First(Box::new(NoLock)))
-    }
-}
-
-struct NoTransport;
-
-impl FrameTransport for NoTransport {
-    fn listen(&self, _id: Uuid) -> io::Result<Box<dyn FrameListener>> {
-        Err(not_yet())
-    }
-
-    fn connect(&self, _id: Uuid) -> io::Result<Box<dyn ReadWrite>> {
-        Err(not_yet())
-    }
-
-    fn is_served(&self, _id: Uuid) -> bool {
-        false
-    }
-}
-
-impl fmt::Debug for NoTransport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("NoTransport")
-    }
-}
-
-pub(crate) fn install() {
-    rtspcam_core::secret::install_store(secret_store());
-}
-
-pub(crate) fn camera_backend() -> Arc<dyn VirtualCameraBackend> {
-    Arc::new(UnsupportedCameras)
-}
-
-pub(crate) fn secret_store() -> Box<dyn SecretStore> {
-    Box::new(NoSecrets)
-}
-
-pub(crate) fn autostart() -> Box<dyn Autostart> {
-    Box::new(NoAutostart)
-}
-
-pub(crate) fn single_instance(_name: &str) -> Box<dyn SingleInstance> {
-    Box::new(AlwaysFirst)
-}
-
-pub(crate) fn file_replacer() -> Arc<dyn FileReplace> {
-    Arc::new(CopyThenRename)
-}
-
-pub(crate) fn frame_transport() -> Arc<dyn FrameTransport> {
-    Arc::new(NoTransport)
-}
-
-pub(crate) fn open_folder(_folder: &Path) -> io::Result<()> {
-    Err(not_yet())
-}
-
-pub(crate) fn attach_parent_console() {}
-
-pub(crate) fn process_memory() -> Option<(usize, usize)> {
-    None
+    Ok(())
 }

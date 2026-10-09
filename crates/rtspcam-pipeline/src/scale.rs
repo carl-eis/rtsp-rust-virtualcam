@@ -158,7 +158,7 @@ impl Scaler {
         mode: FitMode,
         out: &mut Vec<u8>,
     ) {
-        assert!(dst_w % 2 == 0 && dst_h % 2 == 0 && dst_w > 0 && dst_h > 0);
+        assert!(dst_w.is_multiple_of(2) && dst_h.is_multiple_of(2) && dst_w > 0 && dst_h > 0);
         let plan = self.plan_for(src.width(), src.height(), dst_w, dst_h, mode);
         let (dw, dh) = (dst_w as usize, dst_h as usize);
         out.resize(Frame::nv12_len(dst_w, dst_h), 0);
@@ -246,7 +246,7 @@ fn scale_plane<const C: usize>(
         let wy = ty.w;
         let d = (dst_y + row) * dst_stride + dx;
         let out = &mut dst[d..d + row_len];
-        for (px, tx) in out.chunks_exact_mut(C).zip(&axes.x) {
+        for (px, tx) in out.as_chunks_mut::<C>().0.iter_mut().zip(&axes.x) {
             let (a, b, wx) = (tx.i0 as usize * C, tx.i1 as usize * C, tx.w);
             for c in 0..C {
                 let top = u32::from(r0[a + c]) * (256 - wx) + u32::from(r0[b + c]) * wx;
@@ -291,7 +291,7 @@ pub fn nv12_to_bgra(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>) {
         let y_row = &y_plane[row * w..(row + 1) * w];
         let uv_row = &uv_plane[(row / 2) * w..(row / 2 + 1) * w];
         let out_row = &mut out[row * w * 4..(row + 1) * w * 4];
-        for (x, px) in out_row.chunks_exact_mut(4).enumerate() {
+        for (x, px) in out_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let y = (i32::from(y_row[x]) - 16) * ky;
             let u = i32::from(uv_row[x & !1]) - 128;
             let v = i32::from(uv_row[(x & !1) + 1]) - 128;
@@ -354,7 +354,7 @@ mod tests {
     /// A frame with a constant Y and UV value.
     fn solid(w: u32, h: u32, y: u8, u: u8, v: u8) -> Frame {
         let mut data = vec![y; Frame::nv12_len(w, h)];
-        for pair in data[(w * h) as usize..].chunks_exact_mut(2) {
+        for pair in data[(w * h) as usize..].as_chunks_mut::<2>().0.iter_mut() {
             pair[0] = u;
             pair[1] = v;
         }
@@ -366,7 +366,7 @@ mod tests {
         let src = solid(1920, 1080, 81, 90, 240);
         let out = Scaler::new().scale(&src, 1280, 720, FitMode::Stretch);
         assert!(out.y().iter().all(|&v| v == 81));
-        assert!(out.uv().chunks_exact(2).all(|p| p == [90, 240]));
+        assert!(out.uv().as_chunks::<2>().0.iter().all(|p| *p == [90, 240]));
     }
 
     #[test]

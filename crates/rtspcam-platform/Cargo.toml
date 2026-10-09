@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 base64.workspace = true
+directories.workspace = true
 rtspcam-core.workspace = true
 rtspcam-ipc = { workspace = true, features = ["server"] }
 # No default features: building this crate alone (for example `cargo check` for another OS)
@@ -46,3 +47,14 @@ tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+chacha20poly1305 = "0.10"
+keyring-core = "1"
+rand.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }

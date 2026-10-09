@@ -24,6 +24,7 @@ pub mod autostart;
 pub mod camera;
 pub mod desktop;
 pub mod instance;
+mod login_items;
 pub mod transport;
 
 #[cfg(target_os = "linux")]
@@ -34,6 +35,9 @@ mod macos;
 mod unix;
 #[cfg(windows)]
 mod windows;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+compile_error!("rtspcam-platform supports Windows, Linux and macOS");
 
 #[cfg(target_os = "linux")]
 use self::linux as os;
