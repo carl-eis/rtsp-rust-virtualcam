@@ -13,7 +13,7 @@ kernel driver is needed. Cameras exist only while the app is running.
 > camera apps. The desktop app and UI (Phases 4–5) are built and run, but the cameras have only been
 > checked through Frame Server with a test pattern, not yet in Discord or other apps. See the
 > [implementation plan](documentation/01-plan.md) and the progress records
-> ([2–3](documentation/03-progress-phases-2-3.md), [4–5](documentation/05-progress-phases-4-5.md)).
+> ([2–3](documentation/03-progress-phases-2-3.md), [4–5](documentation/05-progress-phases-4-5.md)) and the latest [checkpoint](documentation/06-checkpoint-2026-10-09.md).
 
 ![RTSP Cam showing a live camera preview and its status](screenshots/main-window.png)
 

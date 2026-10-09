@@ -10,7 +10,7 @@ Status as of 2026-10-09. Continues [03-progress-phases-2-3.md](03-progress-phase
 | 4 Host integration (CameraManager) | **Code done and tested** against a fake Windows backend and the Docker RTSP server. The exit criteria that involve real apps (Discord switching cameras, Quit while Discord streams) are **not verified**: they need the admin install of the DLL, which has still not been done. |
 | 5 Desktop UI | **Done and run for real**: window, list, live preview, dialogs, tray, minimize to tray, quit. Screenshots were checked by eye. Exit criterion "use it in Discord" has the same blocker as Phase 4. |
 
-Numbering note: the Phase 0 decision record, if written, is now `06`.
+Numbering note: the Phase 0 decision record, if written, is now `07` (06 is the checkpoint).
 
 ## 2. Phase 4
 
