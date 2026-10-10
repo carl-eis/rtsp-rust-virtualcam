@@ -180,6 +180,9 @@ struct OutputFormat {
     visible: (u32, u32, u32, u32),
 }
 
+/// Failed key frames in a row, before any picture, after which hardware decoding is given up.
+const EARLY_FAILURES_LOST: u32 = 3;
+
 pub(crate) struct MfDecoder {
     // Field order matters: COM objects must be released before Media Foundation shuts down.
     transform: IMFTransform,
@@ -192,6 +195,8 @@ pub(crate) struct MfDecoder {
     name: String,
     on_gpu: bool,
     pictures: u64,
+    /// Decode errors before the first picture (see [`classify`](Self::classify)).
+    early_failures: u32,
     limit: Option<(u32, u32)>,
     output: Option<OutputFormat>,
     /// Our own output sample, when the MFT doesn't allocate them.
@@ -293,6 +298,7 @@ impl MfDecoder {
             mft_name,
             on_gpu: false,
             pictures: 0,
+            early_failures: 0,
             limit: None,
             output: None,
             out_sample: None,
@@ -477,9 +483,11 @@ impl MfDecoder {
         }
     }
 
-    /// In Direct3D 11 mode, a lost device or a failure before the first picture means this
-    /// decoder can't go on: the pipeline replaces it (in software after an early failure).
-    fn classify(&self, e: PipelineError) -> PipelineError {
+    /// In Direct3D 11 mode, a lost device, or repeated failures before the first picture, mean
+    /// this decoder can't go on: the pipeline replaces it (in software after early failures).
+    /// A single early failure is more likely a damaged key frame, so decoding just moves on to
+    /// the next one.
+    fn classify(&mut self, e: PipelineError) -> PipelineError {
         let Some(copy_back) = &self.copy_back else {
             return e;
         };
@@ -491,6 +499,10 @@ impl MfDecoder {
             );
         }
         if self.pictures == 0 {
+            self.early_failures += 1;
+            if self.early_failures < EARLY_FAILURES_LOST {
+                return e;
+            }
             return PipelineError::new(
                 ErrorKind::DecoderLost,
                 format!("hardware decoding failed ({e})"),

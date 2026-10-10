@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -26,6 +27,7 @@ use std::time::Duration;
 use rtspcam_core::config::{OnDisconnect, Picture, Rotation, StreamConfig};
 use rtspcam_core::profile::{self, Stage};
 use rtspcam_core::{Config, FitMode};
+use rtspcam_ipc::source::PictureSignal;
 use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
     Frame, FrameBus, Pipeline, PipelineError, PipelineOptions, SourceOptions, StreamState,
@@ -84,6 +86,9 @@ struct Demand {
 
 /// A size asked for is forgotten when nobody asked for it this long (its consumer left).
 const REQUEST_TTL: Duration = Duration::from_secs(3);
+/// A size asked for again within this long changes nothing, so the limit isn't worked out
+/// again for every frame a consumer reads.
+const REQUEST_REFRESH: Duration = Duration::from_millis(500);
 
 /// The picture sizes consumers and the preview asked for recently, and the decoder size limit
 /// worked out from them.
@@ -92,7 +97,7 @@ struct Requests {
     /// Size and how the picture is fitted into it.
     seen: HashMap<(u32, u32, FitMode), std::time::Instant>,
     limit: Option<(u32, u32)>,
-    /// The camera's picture size, once a picture arrived (`Frame::source_size`).
+    /// The camera's picture size `limit` was worked out with.
     source: Option<(u32, u32)>,
 }
 
@@ -198,6 +203,8 @@ pub(crate) struct CameraShared {
     pipeline: Mutex<Option<Pipeline>>,
     /// Sizes asked for, for the decoder's size limit (`None`: don't limit).
     requests: Option<Mutex<Requests>>,
+    /// The camera's picture size, packed as width << 32 | height; 0 until a picture arrived.
+    source_size: AtomicU64,
     notify: Notify,
 }
 
@@ -215,6 +222,7 @@ impl CameraShared {
             vcam: Mutex::new(VcamState::Pending),
             pipeline: Mutex::new(None),
             requests: Some(Mutex::default()),
+            source_size: AtomicU64::new(0),
             notify,
         }
     }
@@ -232,11 +240,21 @@ impl CameraShared {
             return;
         };
         let now = std::time::Instant::now();
-        // A handful of entries at most (one per distinct size), so recomputing is cheap.
+        let source = self.source_size();
+        let key = (width, height, fit);
         let mut r = requests.lock().unwrap_or_else(PoisonError::into_inner);
-        r.seen.insert((width, height, fit), now);
+        // Most calls repeat a size asked for moments ago, for the same camera picture.
+        if r.source == source
+            && r.seen
+                .get(&key)
+                .is_some_and(|t| now.duration_since(*t) < REQUEST_REFRESH)
+        {
+            return;
+        }
+        // A handful of entries at most (one per distinct size), so recomputing is cheap.
+        r.seen.insert(key, now);
         r.seen.retain(|_, t| now.duration_since(*t) < REQUEST_TTL);
-        let source = r.source;
+        r.source = source;
         let limit = r
             .seen
             .keys()
@@ -256,13 +274,49 @@ impl CameraShared {
         }
     }
 
+    /// The camera's picture size, once a picture arrived (`Frame::source_size`).
+    fn source_size(&self) -> Option<(u32, u32)> {
+        match self.source_size.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(((v >> 32) as u32, v as u32)),
+        }
+    }
+
+    /// Finishes when the stream publishes a picture (see [`FrameSource::picture_signal`]).
+    ///
+    /// [`FrameSource::picture_signal`]: rtspcam_ipc::FrameSource::picture_signal
+    pub(crate) fn picture_signal(&self) -> Option<PictureSignal> {
+        let mut rx = self
+            .bus
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()?
+            .subscribe();
+        Some(Box::pin(async move {
+            let _ = rx.changed().await;
+        }))
+    }
+
     /// The current decoded size limit.
+    #[cfg(test)]
     fn size_limit(&self) -> Option<(u32, u32)> {
         self.requests
             .as_ref()?
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .limit
+    }
+
+    /// Makes `pipeline` the camera's, with the current decoded size limit. Holds the requests
+    /// lock throughout (the same order as [`note_request`](Self::note_request)), so a limit
+    /// worked out meanwhile isn't lost.
+    fn install_pipeline(&self, pipeline: Pipeline) {
+        let requests = self
+            .requests
+            .as_ref()
+            .map(|r| r.lock().unwrap_or_else(PoisonError::into_inner));
+        pipeline.set_size_limit(requests.as_ref().and_then(|r| r.limit));
+        *self.pipeline.lock().unwrap_or_else(PoisonError::into_inner) = Some(pipeline);
     }
 
     /// The newest picture with the stream's picture settings applied (crop, rotate, flip, text).
@@ -283,12 +337,9 @@ impl CameraShared {
                 .then(|| adjusted.shown.clone())
                 .flatten();
         };
-        if let Some(requests) = &self.requests {
-            requests
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .source = Some(raw.source_size);
-        }
+        let (w, h) = raw.source_size;
+        self.source_size
+            .store((u64::from(w) << 32) | u64::from(h), Ordering::Relaxed);
         let shown = adjusted.adjust(raw, &self.name, &self.picture);
         if self.picture.on_disconnect == OnDisconnect::FreezeLastFrame {
             adjusted.shown = Some(shown.clone());
@@ -743,13 +794,9 @@ async fn supervise(
                     &handle,
                 );
                 camera.set_bus(Some(pipeline.frames().clone()));
-                pipeline.set_size_limit(camera.size_limit());
                 let rx = pipeline.status();
                 camera.set_activity(Activity::Running(rx.borrow().clone()));
-                *camera
-                    .pipeline
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(pipeline);
+                camera.install_pipeline(pipeline);
                 status = Some(rx);
             }
         } else if status.is_some() {

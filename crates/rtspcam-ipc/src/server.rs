@@ -42,7 +42,8 @@ pub trait FrameListener: Send + 'static {
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Status is re-sent this often even if unchanged, as a heartbeat.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
-/// How often a frame slot checks again for a picture that is late.
+/// How often a frame slot checks again for a picture that is late, when the source can't
+/// signal one.
 const LATE_POLL: Duration = Duration::from_millis(3);
 
 /// Serves `source` to every client `listener` accepts, until the task is dropped (which also
@@ -145,10 +146,23 @@ async fn write_frames(
         // Pictures don't arrive exactly once per slot (hardware decoding adds jitter). One
         // that is a little late still goes out in this slot instead of waiting a whole slot,
         // by when the next one has replaced it.
+        // Waits on the source's signal where it has one: a short sleep lasts a whole timer tick
+        // on Windows (about 15.6 ms), longer than the half slot at high frame rates. The
+        // signal is taken before looking, so a picture published in between still ends the
+        // wait.
         let late_until = now + frame_interval(format) / 2;
+        let mut signal = source.picture_signal();
         let mut next = source.next_frame(format, last_seq, &mut data);
         while next.is_none() && streaming && tokio::time::Instant::now() < late_until {
-            tokio::time::sleep(LATE_POLL).await;
+            match signal {
+                Some(s) => {
+                    if tokio::time::timeout_at(late_until, s).await.is_err() {
+                        break;
+                    }
+                }
+                None => tokio::time::sleep(LATE_POLL).await,
+            }
+            signal = source.picture_signal();
             next = source.next_frame(format, last_seq, &mut data);
         }
         if let Some(seq) = next {

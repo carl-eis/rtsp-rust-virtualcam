@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use rtspcam_core::profile::{self, Stage};
 use rtspcam_ipc::FrameSource;
+use rtspcam_ipc::source::PictureSignal;
 use rtspcam_ipc::{PixelFormat, StreamStatus, VideoFormat};
 use rtspcam_pipeline::scale::{nv12_to_bgra, nv12_to_i420, nv12_to_yuyv};
 use rtspcam_pipeline::{Frame, Matrix, Scaler};
@@ -60,12 +61,14 @@ const RESEND_EVERY: Duration = Duration::from_millis(500);
 const OUTPUT_IDLE: Duration = Duration::from_secs(10);
 
 impl Output {
-    /// Writes `frame` in `format` into `out`.
+    /// Writes `frame` in `format` into `out`. `resend`: the reader already had this picture
+    /// (a held picture sent again), so it isn't a second reader.
     fn fill(
         &mut self,
         frame: &Arc<Frame>,
         format: VideoFormat,
         fit: rtspcam_core::FitMode,
+        resend: bool,
         out: &mut Vec<u8>,
     ) {
         self.used = Some(Instant::now());
@@ -73,6 +76,10 @@ impl Output {
             .made_from
             .as_ref()
             .is_some_and(|f| Arc::ptr_eq(f, frame));
+        if same && resend && !self.cached {
+            self.make(frame, format, fit, Some(out));
+            return;
+        }
         if same {
             // A second reader of this picture.
             self.shared_now = true;
@@ -167,7 +174,8 @@ impl FrameSource for CameraSource {
             st.last = Some(frame.clone());
             st.seq += 1;
         }
-        if after == Some(st.seq) {
+        let resend = after == Some(st.seq);
+        if resend {
             let frozen = self.camera.holds_last_frame() && !self.camera.activity().is_streaming();
             if !frozen || st.resent.is_some_and(|t| t.elapsed() < RESEND_EVERY) {
                 return None;
@@ -189,12 +197,16 @@ impl FrameSource for CameraSource {
         // Other formats go on while this one is made.
         drop(st);
         let mut output = output.lock().unwrap_or_else(PoisonError::into_inner);
-        output.fill(&frame, format, self.camera.fit, out);
+        output.fill(&frame, format, self.camera.fit, resend, out);
         Some(seq)
     }
 
     fn status(&self) -> (StreamStatus, String) {
         self.camera.activity().ipc_status()
+    }
+
+    fn picture_signal(&self) -> Option<PictureSignal> {
+        self.camera.picture_signal()
     }
 }
 

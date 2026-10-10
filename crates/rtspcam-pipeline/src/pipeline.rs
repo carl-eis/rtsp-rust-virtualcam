@@ -120,8 +120,10 @@ enum DecodeEvent {
         decoder: String,
     },
     Picture {
-        width: u32,
-        height: u32,
+        /// The camera's picture size.
+        source: (u32, u32),
+        /// The size the decoder produced.
+        decoded: (u32, u32),
         latency: Duration,
         /// The decoder's time for this picture.
         decode_time: Duration,
@@ -346,8 +348,8 @@ async fn run_session(
                     tracing::info!(stream = name, decoder, "decoder ready");
                     stats.totals.decoder = decoder;
                 }
-                DecodeEvent::Picture { width, height, latency, decode_time } => {
-                    stats.picture(width, height, latency, decode_time);
+                DecodeEvent::Picture { source, decoded, latency, decode_time } => {
+                    stats.picture(source, decoded, latency, decode_time);
                 }
                 DecodeEvent::Error(e) => {
                     stats.totals.decode_errors += 1;
@@ -399,6 +401,7 @@ impl StatsWindow {
                 decoder: String::new(),
                 width: 0,
                 height: 0,
+                decoded_size: (0, 0),
                 fps: 0.0,
                 bitrate: 0,
                 latency: Duration::ZERO,
@@ -420,9 +423,16 @@ impl StatsWindow {
         self.last_picture.is_some()
     }
 
-    fn picture(&mut self, width: u32, height: u32, latency: Duration, decode_time: Duration) {
+    fn picture(
+        &mut self,
+        (width, height): (u32, u32),
+        decoded: (u32, u32),
+        latency: Duration,
+        decode_time: Duration,
+    ) {
         self.totals.width = width;
         self.totals.height = height;
+        self.totals.decoded_size = decoded;
         self.totals.frames_decoded += 1;
         self.pictures += 1;
         self.latency_sum += latency;
@@ -602,8 +612,8 @@ where
             .max(1);
         for picture in self.pictures.drain(..) {
             let _ = self.events.send(DecodeEvent::Picture {
-                width: picture.width(),
-                height: picture.height(),
+                source: picture.source_size,
+                decoded: (picture.width(), picture.height()),
                 latency: picture.decode_latency(),
                 decode_time: took / count,
             });
@@ -688,15 +698,17 @@ mod tests {
         w.bytes = 1000;
         for _ in 0..3 {
             w.picture(
-                640,
-                480,
+                (1280, 960),
+                (640, 480),
                 Duration::from_millis(10),
                 Duration::from_millis(2),
             );
         }
         let s = w.snapshot();
         assert!(w.streamed());
-        assert_eq!((s.width, s.height, s.frames_decoded), (640, 480, 3));
+        // The camera's size, not the size the decoder shrank it to.
+        assert_eq!((s.width, s.height, s.frames_decoded), (1280, 960, 3));
+        assert_eq!(s.decoded_size, (640, 480));
         assert_eq!(s.latency, Duration::from_millis(10));
         assert!(s.fps > 0.0 && s.bitrate > 0);
         assert_eq!(w.pictures, 0);

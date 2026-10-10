@@ -466,12 +466,17 @@ struct GpuScaler {
     processor: ID3D11VideoProcessor,
     output: ID3D11Texture2D,
     output_view: ID3D11VideoProcessorOutputView,
-    /// One view per decoder surface (texture, array slice). The decoder reuses a small pool.
-    inputs: HashMap<(usize, u32), ID3D11VideoProcessorInputView>,
+    /// One view per decoder surface (texture, array slice), and the blit that last used it.
+    /// The decoder reuses a small pool.
+    inputs: HashMap<(usize, u32), (ID3D11VideoProcessorInputView, u64)>,
+    blits: u64,
 }
 
 /// More views than any decoder's surface pool: the pool was replaced, start over.
 const MAX_INPUT_VIEWS: usize = 64;
+/// Every this many blits, views not used since the last sweep are dropped. Each holds its
+/// surface, so a pool the decoder replaced would otherwise stay in GPU memory.
+const INPUT_VIEW_SWEEP: u64 = 120;
 
 /// BT.709, studio range (16-235) for both sides, so the Video Processor only scales.
 fn color_space() -> D3D11_VIDEO_PROCESSOR_COLOR_SPACE {
@@ -573,10 +578,14 @@ impl CopyBack {
             if let Some(fence) = &self.fence {
                 fence.wait();
             }
-            let _lock = gpu.lock();
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            gpu.context
-                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            {
+                let _lock = gpu.lock();
+                gpu.context
+                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+            }
+            // Copied out without holding the device, so other streams' decoding goes on
+            // meanwhile; the staging texture is this decoder's own.
             let pitch = mapped.RowPitch as usize;
             let (w, h) = (out.0 as usize, out.1 as usize);
             let data = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * h * 3 / 2);
@@ -595,6 +604,7 @@ impl CopyBack {
                 f.source_size = (vw, vh);
                 f
             });
+            let _lock = gpu.lock();
             gpu.context.Unmap(&staging, 0);
             Ok(frame)
         }
@@ -691,6 +701,7 @@ impl GpuScaler {
                 output: texture,
                 output_view,
                 inputs: HashMap::new(),
+                blits: 0,
             })
         }
     }
@@ -704,6 +715,12 @@ impl GpuScaler {
         visible: (u32, u32, u32, u32),
     ) -> windows_core::Result<()> {
         let key = (texture.as_raw() as usize, index);
+        self.blits += 1;
+        let now = self.blits;
+        if now.is_multiple_of(INPUT_VIEW_SWEEP) {
+            self.inputs
+                .retain(|_, (_, used)| now - *used < INPUT_VIEW_SWEEP);
+        }
         if !self.inputs.contains_key(&key) {
             if self.inputs.len() >= MAX_INPUT_VIEWS {
                 self.inputs.clear();
@@ -729,9 +746,12 @@ impl GpuScaler {
                 )?;
             }
             let view = view.ok_or_else(|| windows_core::Error::from(E_FAIL))?;
-            self.inputs.insert(key, view);
+            self.inputs.insert(key, (view, now));
         }
-        let view = self.inputs.get(&key).cloned();
+        let view = self.inputs.get_mut(&key).map(|(view, used)| {
+            *used = now;
+            view.clone()
+        });
         let (x, y, w, h) = visible;
         let source = RECT {
             left: x as i32,

@@ -1,6 +1,12 @@
 //! Where a camera's frames come from.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use crate::protocol::{StreamStatus, VideoFormat};
+
+/// What [`FrameSource::picture_signal`] returns.
+pub type PictureSignal = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// A camera's pictures and state, as the app offers them to whatever delivers them to apps.
 ///
@@ -23,4 +29,10 @@ pub trait FrameSource: Send + Sync + 'static {
 
     /// Current state, shown by the camera when there are no frames.
     fn status(&self) -> (StreamStatus, String);
+
+    /// Finishes when a picture newer than any published before this call may be ready, so a
+    /// late picture can be waited for without polling. `None` (the default): the caller polls.
+    fn picture_signal(&self) -> Option<PictureSignal> {
+        None
+    }
 }
