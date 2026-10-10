@@ -54,6 +54,7 @@ keyring-core = "1"
 rand.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.155"
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

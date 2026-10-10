@@ -51,13 +51,14 @@ impl std::error::Error for CameraError {}
 /// - **Windows** (`windows::VcamBackend`): `MFCreateVirtualCamera` with session lifetime, so the
 ///   cameras vanish with the process. Windows' Frame Server loads `rtspcam_vcam.dll`, which
 ///   connects to the named pipe `\\.\pipe\rtspcam\<id>`; `create` serves `frames` on it.
-/// - **Linux** (future): v4l2loopback. `create` opens the camera's `/dev/videoN` and starts a
-///   [`Pusher`](crate::push::Pusher) that writes each picture to the device (push; there is no
-///   consumer process).
+/// - **Linux** (`linux::V4l2Loopback`): v4l2loopback. `create` adds (or finds) the camera's
+///   `/dev/videoN` and starts a [`Pusher`](crate::push::Pusher) that writes each picture to
+///   the device (push; there is no consumer process). Without the module, `check` and
+///   `create` return [`CameraError::Unsupported`] with what to install.
 /// - **macOS** (future): a CoreMediaIO Camera Extension. `create` asks the extension for a
 ///   device and starts a [`Pusher`](crate::push::Pusher) that enqueues each picture on the
 ///   device's sink stream.
-/// - **Linux and macOS today**: [`UnsupportedCameras`].
+/// - **macOS today**: [`UnsupportedCameras`].
 ///
 /// Methods block (creating a Windows camera takes about a second). The camera manager calls
 /// them on its blocking thread pool, never on the UI thread.

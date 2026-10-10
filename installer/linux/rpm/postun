@@ -1,0 +1,2 @@
+systemctl daemon-reload >/dev/null 2>&1 || :
+udevadm control --reload-rules >/dev/null 2>&1 || :

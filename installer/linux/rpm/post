@@ -1,0 +1,11 @@
+udevadm control --reload-rules >/dev/null 2>&1 || :
+udevadm trigger --subsystem-match=misc --sysname-match=v4l2loopback >/dev/null 2>&1 || :
+systemctl daemon-reload >/dev/null 2>&1 || :
+if [ "$1" -eq 1 ]; then
+    systemctl enable rtspcam-v4l2loopback.service >/dev/null 2>&1 || :
+fi
+/usr/lib/rtspcam/rtspcam-v4l2loopback || :
+if [ ! -d /sys/module/v4l2loopback ]; then
+    echo "RTSP Cam: v4l2loopback is not loaded yet. Virtual cameras need it (on Fedora, from"
+    echo "RPM Fusion: akmod-v4l2loopback); if it is installed, reboot."
+fi

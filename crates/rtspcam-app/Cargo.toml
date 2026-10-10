@@ -42,3 +42,59 @@ winresource = "0.1"
 
 [lints]
 workspace = true
+
+# Linux packages, built by release.yml after `cargo build --workspace --release`:
+# `cargo deb -p rtspcam-app --no-build` and `cargo generate-rpm -p crates/rtspcam-app`.
+# v4l2loopback is only recommended: the app works without it (no cameras), and a hard
+# dependency would block installs where the module isn't available (documentation/11 §5).
+[package.metadata.deb]
+name = "rtspcam"
+maintainer = "Carl Eiserman <carleiserman@gmail.com>"
+extended-description = """\
+Turns RTSP and ONVIF network cameras into virtual webcams that video-call apps, browsers and \
+OBS can use. Virtual cameras need the v4l2loopback kernel module (v4l2loopback-dkms)."""
+section = "video"
+priority = "optional"
+depends = "$auto"
+recommends = "v4l2loopback-dkms"
+maintainer-scripts = "../../installer/linux/deb"
+assets = [
+    ["target/release/rtspcam", "usr/bin/", "755"],
+    ["target/release/rtspcam-cli", "usr/bin/", "755"],
+    ["../../installer/linux/rtspcam.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.png", "usr/share/icons/hicolor/256x256/apps/rtspcam.png", "644"],
+    ["../../installer/linux/rtspcam-v4l2loopback", "usr/lib/rtspcam/", "755"],
+    ["../../installer/linux/rtspcam-v4l2loopback.service", "usr/lib/systemd/system/", "644"],
+    ["../../installer/linux/70-rtspcam.rules", "usr/lib/udev/rules.d/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "rtspcam"
+summary = "RTSP and ONVIF cameras as virtual webcams"
+license = "Proprietary"
+# The built-in requirement finder lists versioned glibc symbols as `libc.so.6(GLIBC_2.27)[WEAK]`,
+# which no package provides, so the requirements are listed by hand.
+auto-req = "no"
+post_install_script = "../../installer/linux/rpm/post"
+pre_uninstall_script = "../../installer/linux/rpm/preun"
+post_uninstall_script = "../../installer/linux/rpm/postun"
+assets = [
+    { source = "target/release/rtspcam", dest = "/usr/bin/rtspcam", mode = "755" },
+    { source = "target/release/rtspcam-cli", dest = "/usr/bin/rtspcam-cli", mode = "755" },
+    { source = "../../installer/linux/rtspcam.desktop", dest = "/usr/share/applications/rtspcam.desktop", mode = "644" },
+    { source = "assets/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/rtspcam.png", mode = "644" },
+    { source = "../../installer/linux/rtspcam-v4l2loopback", dest = "/usr/lib/rtspcam/rtspcam-v4l2loopback", mode = "755" },
+    { source = "../../installer/linux/rtspcam-v4l2loopback.service", dest = "/usr/lib/systemd/system/rtspcam-v4l2loopback.service", mode = "644" },
+    { source = "../../installer/linux/70-rtspcam.rules", dest = "/usr/lib/udev/rules.d/70-rtspcam.rules", mode = "644" },
+]
+
+# Fedora has the module in RPM Fusion (akmod-v4l2loopback); a weak dependency is skipped
+# when no enabled repository has it.
+[package.metadata.generate-rpm.recommends]
+v4l2loopback = "*"
+
+[package.metadata.generate-rpm.requires]
+glibc = ">= 2.35"
+fontconfig = "*"
+"libstdc++" = "*"
+libgcc = "*"

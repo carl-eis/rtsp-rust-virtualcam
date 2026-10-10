@@ -1,7 +1,7 @@
-//! Linux: no virtual cameras yet; secrets in Secret Service, XDG autostart, Unix sockets.
-//!
-//! A v4l2loopback camera backend would be a type here implementing
-//! [`VirtualCameraBackend`], returned by [`camera_backend`]. Nothing else needs to change.
+//! Linux: v4l2loopback virtual cameras, secrets in Secret Service, XDG autostart, Unix sockets.
+
+mod camera;
+mod v4l2;
 
 use std::io;
 use std::path::Path;
@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use rtspcam_core::config::{CopyThenRename, FileReplace};
 
-use crate::camera::UnsupportedCameras;
 use crate::login_items::XdgAutostart;
 use crate::unix::instance::LockFile;
 use crate::unix::secrets::{KeyFile, Keyring, SealedStore};
@@ -20,8 +19,10 @@ pub(crate) fn install() {
     rtspcam_core::secret::install_store(secret_store());
 }
 
+/// v4l2loopback devices. Without the module every camera is unsupported, with a status that
+/// says what to install.
 pub(crate) fn camera_backend() -> Arc<dyn VirtualCameraBackend> {
-    Arc::new(UnsupportedCameras)
+    Arc::new(camera::V4l2Loopback::new())
 }
 
 fn open_keyring() -> keyring_core::Result<Arc<keyring_core::CredentialStore>> {

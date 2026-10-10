@@ -1,0 +1,56 @@
+#!/bin/sh
+# Loads v4l2loopback for RTSP Cam's virtual cameras. Run as root at boot by
+# rtspcam-v4l2loopback.service, and once by the package's install script.
+#
+# The options depend on the module's version, which can change with any upgrade, so they are
+# worked out here at each boot instead of in /etc/modprobe.d:
+#   - 0.13 and later have a control device (/dev/v4l2loopback) through which the app adds a
+#     camera per stream, named after it. One spare device is made for other programs (OBS),
+#     with exclusive caps so it isn't listed as a camera until something writes to it.
+#   - Older versions (0.12) make devices only here: $DEVICES of them, labelled
+#     "${LABEL_PREFIX}1" and so on, which the app hands out to its streams.
+#
+# Keep DEVICES and LABEL_PREFIX in step with crates/rtspcam-platform/src/linux/camera.rs.
+set -u
+
+DEVICES=4
+LABEL_PREFIX="RTSP Cam "
+
+if [ -d /sys/module/v4l2loopback ]; then
+    # Loaded already (by hand, by OBS, or an earlier run): leave its devices alone.
+    exit 0
+fi
+
+if ! modinfo -n v4l2loopback >/dev/null 2>&1; then
+    echo "rtspcam: v4l2loopback is not installed; install it for virtual cameras (v4l2loopback-dkms, or akmod-v4l2loopback on Fedora)" >&2
+    exit 0
+fi
+
+# 0.13 added both the version tag and the control device; 0.12 has neither.
+version=$(modinfo -F version v4l2loopback 2>/dev/null) || version=""
+major=$(echo "$version" | cut -d. -f1)
+minor=$(echo "$version" | cut -d. -f2)
+case "$major" in '' | *[!0-9]*) major=0 ;; esac
+case "$minor" in '' | *[!0-9]*) minor=0 ;; esac
+
+if [ "$major" -gt 0 ] || [ "$minor" -ge 13 ]; then
+    modprobe v4l2loopback exclusive_caps=1
+else
+    labels=""
+    caps=""
+    i=1
+    while [ "$i" -le "$DEVICES" ]; do
+        labels="${labels:+$labels,}${LABEL_PREFIX}$i"
+        caps="${caps:+$caps,}1"
+        i=$((i + 1))
+    done
+    # The quotes are for the kernel's parameter parser (the labels have spaces).
+    modprobe v4l2loopback devices="$DEVICES" exclusive_caps="$caps" card_label="\"$labels\""
+fi
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    echo "rtspcam: could not load v4l2loopback ${version:-0.12} (with Secure Boot, enrol the module's key and reboot)" >&2
+fi
+# Never fail the boot or the package install over this: the app explains what is missing.
+exit 0

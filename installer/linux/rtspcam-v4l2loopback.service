@@ -1,0 +1,12 @@
+[Unit]
+Description=Load v4l2loopback for RTSP Cam's virtual cameras
+Documentation=https://github.com/carl-eis/rtsp-rust-virtualcam
+After=systemd-modules-load.service
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/rtspcam/rtspcam-v4l2loopback
+
+[Install]
+WantedBy=multi-user.target

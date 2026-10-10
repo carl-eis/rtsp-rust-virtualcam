@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+    # The udev rule for /dev/v4l2loopback, for a module that is loaded already.
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+        udevadm trigger --subsystem-match=misc --sysname-match=v4l2loopback || true
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        systemctl enable rtspcam-v4l2loopback.service || true
+    fi
+    # Cameras without a reboot. Never fails; with Secure Boot the module may only load after
+    # the key enrolment at the next boot.
+    /usr/lib/rtspcam/rtspcam-v4l2loopback || true
+    if [ ! -d /sys/module/v4l2loopback ]; then
+        echo "RTSP Cam: v4l2loopback is not loaded yet. Virtual cameras need the v4l2loopback-dkms"
+        echo "package; if it is installed, reboot (with Secure Boot, enrol its key when asked)."
+    fi
+fi
+exit 0
