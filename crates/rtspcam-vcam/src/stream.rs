@@ -4,6 +4,11 @@
 //! negotiated frame rate with the newest frame from the app (or a placeholder picture), so a
 //! consumer that asks as fast as it can still gets a steady 30 (or 15) fps, and repeated frames
 //! when the RTSP stream stalls.
+//!
+//! The thread waits for each frame slot on a high-resolution waitable timer: a condition
+//! variable's timeout is rounded to the process's timer resolution (about 15.6 ms in Frame
+//! Server), which made frame gaps alternate between about 31 and 47 ms at 30 fps. Samples are
+//! stamped `start + n * interval`, so wake-up jitter doesn't reach the timestamps either.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -12,19 +17,26 @@ use std::time::{Duration, Instant};
 use rtspcam_ipc::VideoFormat;
 use rtspcam_ipc::placeholder::{self, STALE_AFTER};
 use uuid::Uuid;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::KernelStreaming::PINNAME_VIDEO_CAPTURE;
 use windows::Win32::Media::MediaFoundation::{
-    IMFAsyncCallback, IMFAsyncResult, IMFAttributes, IMFMediaEvent, IMFMediaEventGenerator_Impl,
-    IMFMediaEventQueue, IMFMediaSource, IMFMediaStream, IMFMediaStream_Impl, IMFMediaStream2,
-    IMFMediaStream2_Impl, IMFStreamDescriptor, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS,
-    MEMediaSample, MEStreamStarted, MEStreamStopped, MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES,
+    IMF2DBuffer, IMFAsyncCallback, IMFAsyncResult, IMFAttributes, IMFMediaEvent,
+    IMFMediaEventGenerator_Impl, IMFMediaEventQueue, IMFMediaSource, IMFMediaStream,
+    IMFMediaStream_Impl, IMFMediaStream2, IMFMediaStream2_Impl, IMFSample, IMFStreamDescriptor,
+    IMFVideoSampleAllocatorEx, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, MEMediaSample,
+    MEStreamStarted, MEStreamStopped, MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES,
     MF_DEVICESTREAM_FRAMESERVER_SHARED, MF_DEVICESTREAM_STREAM_CATEGORY, MF_DEVICESTREAM_STREAM_ID,
     MF_E_INVALIDREQUEST, MF_E_SHUTDOWN, MF_STREAM_STATE, MF_STREAM_STATE_RUNNING,
     MF_STREAM_STATE_STOPPED, MFCreateEventQueue, MFCreateMemoryBuffer, MFCreateSample,
-    MFCreateStreamDescriptor, MFFrameSourceTypes_Color, MFGetSystemTime, MFSampleExtension_Token,
+    MFCreateStreamDescriptor, MFCreateVideoSampleAllocatorEx, MFFrameSourceTypes_Color,
+    MFGetSystemTime, MFSampleExtension_Token,
 };
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows_core::{GUID, HRESULT, IUnknown, Interface as _, Ref, implement};
+use windows::Win32::System::Threading::{
+    CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, CreateEventW, CreateWaitableTimerExW, INFINITE,
+    SetEvent, SetWaitableTimer, TIMER_ALL_ACCESS, WaitForMultipleObjects,
+};
+use windows_core::{GUID, HRESULT, IUnknown, Interface as _, PCWSTR, Ref, implement};
 
 use crate::feed::{Feed, FeedStatus};
 use crate::formats::{format_of, media_type};
@@ -274,26 +286,83 @@ impl IMFMediaStream2_Impl for MediaStream_Impl {
     }
 }
 
-/// Requests waiting for a sample, shared with the delivery thread.
+/// Requests waiting for a sample.
 struct Requests {
     tokens: VecDeque<Option<Agile<IUnknown>>>,
     running: bool,
 }
 
+/// What the stream shares with its delivery thread.
+struct Shared {
+    requests: Mutex<Requests>,
+    /// Signalled when a request arrives or delivery stops.
+    arrived: Condvar,
+    /// Set (once, never reset) when delivery stops, to end a wait for the next frame slot.
+    /// `None` if it couldn't be created; the thread then paces with `arrived`.
+    stopped: Option<Handle>,
+}
+
+impl Shared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Requests> {
+        self.requests.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// An owned kernel handle (event or timer), closed on drop.
+struct Handle(HANDLE);
+
+// SAFETY: event and timer handles may be used and closed from any thread.
+unsafe impl Send for Handle {}
+// SAFETY: as above; waiting and signalling are thread-safe kernel calls.
+unsafe impl Sync for Handle {}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned by this value and not used after this.
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// A manual-reset event, initially not set.
+fn new_event() -> Option<Handle> {
+    // SAFETY: creates an unnamed event; the returned handle is owned by `Handle`.
+    unsafe { CreateEventW(None, true, false, PCWSTR::null()) }
+        .map(Handle)
+        .map_err(|e| log!("could not create the stop event: {e}"))
+        .ok()
+}
+
+/// A high-resolution waitable timer (Windows 10 1803 and later), or a normal one before that.
+fn new_timer() -> Option<Handle> {
+    let create = |flags| {
+        // SAFETY: creates an unnamed timer; the returned handle is owned by `Handle`.
+        unsafe { CreateWaitableTimerExW(None, PCWSTR::null(), flags, TIMER_ALL_ACCESS.0) }
+    };
+    create(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
+        .or_else(|e| {
+            log!("no high-resolution timer ({e}); frame pacing will be coarser");
+            create(0)
+        })
+        .map(Handle)
+        .map_err(|e| log!("could not create a waitable timer: {e}"))
+        .ok()
+}
+
 /// The delivery thread for one start of the stream. Dropping it stops the thread.
 struct Delivery {
-    shared: Arc<(Mutex<Requests>, Condvar)>,
+    shared: Arc<Shared>,
 }
 
 impl Delivery {
     fn start(queue: IMFMediaEventQueue, format: VideoFormat, camera: Option<Uuid>) -> Self {
-        let shared = Arc::new((
-            Mutex::new(Requests {
+        let shared = Arc::new(Shared {
+            requests: Mutex::new(Requests {
                 tokens: VecDeque::new(),
                 running: true,
             }),
-            Condvar::new(),
-        ));
+            arrived: Condvar::new(),
+            stopped: new_event(),
+        });
         let thread_shared = shared.clone();
         let queue = Agile(queue);
         let module = ModuleRef::new();
@@ -311,38 +380,137 @@ impl Delivery {
     }
 
     fn request(&self, token: Option<IUnknown>) {
-        let (lock, cv) = &*self.shared;
-        let mut r = lock.lock().unwrap_or_else(|e| e.into_inner());
-        r.tokens.push_back(token.map(Agile));
-        cv.notify_one();
+        self.shared.lock().tokens.push_back(token.map(Agile));
+        self.shared.arrived.notify_one();
     }
 }
 
 impl Drop for Delivery {
     fn drop(&mut self) {
-        let (lock, cv) = &*self.shared;
-        lock.lock().unwrap_or_else(|e| e.into_inner()).running = false;
-        cv.notify_one();
+        self.shared.lock().running = false;
+        self.shared.arrived.notify_one();
+        if let Some(stopped) = &self.shared.stopped {
+            // SAFETY: a valid event handle, kept alive by `shared`.
+            let _ = unsafe { SetEvent(stopped.0) };
+        }
     }
 }
 
-fn deliver(
-    queue: &IMFMediaEventQueue,
-    format: VideoFormat,
-    camera: Option<Uuid>,
-    shared: &(Mutex<Requests>, Condvar),
-) {
-    let (lock, cv) = shared;
+/// Waits until `deadline` or until delivery stops. Returns whether delivery is still running.
+fn wait_until(shared: &Shared, timer: Option<&Handle>, deadline: Instant) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        let waited = match (timer, &shared.stopped) {
+            (Some(timer), Some(stopped)) => {
+                // Relative due time: negative, in 100 ns units.
+                let due = -i64::try_from(remaining.as_nanos() / 100)
+                    .unwrap_or(i64::MAX)
+                    .max(1);
+                // SAFETY: valid timer and event handles, owned by the caller and `shared` for
+                // the whole call; no completion routine.
+                unsafe {
+                    SetWaitableTimer(timer.0, &due, 0, None, None, false).is_ok() && {
+                        let woke = WaitForMultipleObjects(&[timer.0, stopped.0], false, INFINITE);
+                        // WAIT_OBJECT_0 + 1 is the stop event; anything else is a failure.
+                        woke.0 <= WAIT_OBJECT_0.0 + 1
+                    }
+                }
+            }
+            _ => false,
+        };
+        if !waited {
+            // No timer: the condvar's timeout, rounded to the timer resolution.
+            let r = shared.lock();
+            let _ = shared
+                .arrived
+                .wait_timeout_while(r, remaining, |r| r.running)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+    shared.lock().running
+}
+
+/// Evenly spaced sample times: `start + n * interval` in 100 ns units, re-anchored to the clock
+/// only when it has drifted by more than [`Timeline::MAX_DRIFT`] intervals (after a long gap
+/// between requests, or a consumer that asks slower than the frame rate).
+struct Timeline {
+    fps: i64,
+    start: i64,
+    n: i64,
+    anchored: bool,
+}
+
+impl Timeline {
+    const MAX_DRIFT: i64 = 2;
+
+    fn new(fps: u32) -> Self {
+        Self {
+            fps: i64::from(fps.max(1)),
+            start: 0,
+            n: 0,
+            anchored: false,
+        }
+    }
+
+    /// The time for the next sample, given the clock `now` (100 ns units).
+    fn next(&mut self, now: i64) -> i64 {
+        let interval = 10_000_000 / self.fps;
+        let mut time = self.at(self.n);
+        if !self.anchored || (now - time).abs() > Self::MAX_DRIFT * interval {
+            self.start = now;
+            self.n = 0;
+            self.anchored = true;
+            time = now;
+        }
+        self.n += 1;
+        time
+    }
+
+    fn at(&self, n: i64) -> i64 {
+        // Multiply before dividing, so 30 fps doesn't drift by a third of a tick per frame.
+        self.start + n * 10_000_000 / self.fps
+    }
+}
+
+/// How many samples the pool starts with and may grow to. Frame Server holds a few at a time;
+/// past the maximum, samples are allocated one-off (see [`send_sample`]).
+const POOL_INITIAL: u32 = 2;
+const POOL_MAX: u32 = 8;
+
+/// A pool of system-memory samples for `format`, recycled when Frame Server releases them, the
+/// way Microsoft's virtual camera sample does it. `None` if Media Foundation won't make one.
+fn sample_pool(format: &VideoFormat) -> Option<IMFVideoSampleAllocatorEx> {
+    let pool = || -> windows_core::Result<IMFVideoSampleAllocatorEx> {
+        let media_type = media_type(format)?;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: on success `raw` is an owned IMFVideoSampleAllocatorEx pointer, taken over by
+        // `from_raw`. No device manager is set, so samples are in system memory.
+        unsafe {
+            MFCreateVideoSampleAllocatorEx(&IMFVideoSampleAllocatorEx::IID, &mut raw)?;
+            let pool = IMFVideoSampleAllocatorEx::from_raw(raw);
+            pool.InitializeSampleAllocatorEx(POOL_INITIAL, POOL_MAX, None, &media_type)?;
+            Ok(pool)
+        }
+    };
+    pool()
+        .map_err(|e| log!("no sample pool for {format} ({e}); allocating per frame"))
+        .ok()
+}
+
+fn deliver(queue: &IMFMediaEventQueue, format: VideoFormat, camera: Option<Uuid>, shared: &Shared) {
     let interval = Duration::from_secs(1) / format.fps;
     let feed = camera.map(|id| Feed::start(id, format));
+    let timer = new_timer();
+    let pool = sample_pool(&format);
+    let mut timeline = Timeline::new(format.fps);
     let mut placeholder: Option<((String, String), Vec<u8>)> = None;
     let mut next_due = Instant::now();
     loop {
         // Wait for a request.
         let token = {
-            let mut r = lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut r = shared.lock();
             while r.running && r.tokens.is_empty() {
-                r = cv.wait(r).unwrap_or_else(|e| e.into_inner());
+                r = shared.arrived.wait(r).unwrap_or_else(|e| e.into_inner());
             }
             if !r.running {
                 return;
@@ -350,17 +518,12 @@ fn deliver(
             r.tokens.pop_front().flatten()
         };
         // Pace to the frame rate; a long gap between requests doesn't cause a burst.
-        let now = Instant::now();
-        if next_due > now {
-            let r = lock.lock().unwrap_or_else(|e| e.into_inner());
-            let (r, _) = cv
-                .wait_timeout_while(r, next_due - now, |r| r.running)
-                .unwrap_or_else(|e| e.into_inner());
-            if !r.running {
-                return;
-            }
+        if !wait_until(shared, timer.as_ref(), next_due) {
+            return;
         }
         next_due = next_due.max(Instant::now() - interval) + interval;
+        // SAFETY: MFGetSystemTime has no preconditions.
+        let time = timeline.next(unsafe { MFGetSystemTime() });
 
         let snapshot = feed.as_ref().map(Feed::snapshot);
         let live = snapshot
@@ -383,7 +546,8 @@ fn deliver(
                     .1
             }
         };
-        if let Err(e) = send_sample(queue, data, interval, token.as_ref().map(|t| &t.0)) {
+        let token = token.as_ref().map(|t| &t.0);
+        if let Err(e) = send_sample(queue, pool.as_ref(), data, time, interval, token) {
             log!("could not deliver a sample: {e}");
             if e.code() == MF_E_SHUTDOWN {
                 return;
@@ -405,15 +569,58 @@ fn placeholder_text(camera: Option<Uuid>, status: Option<(&FeedStatus, &str)>) -
     (title.to_owned(), detail.to_owned())
 }
 
+/// Sends `data` as a sample stamped `time` (100 ns units), in a pooled sample when the pool has
+/// one free and a one-off sample otherwise.
 fn send_sample(
     queue: &IMFMediaEventQueue,
+    pool: Option<&IMFVideoSampleAllocatorEx>,
     data: &[u8],
+    time: i64,
     duration: Duration,
     token: Option<&IUnknown>,
 ) -> windows_core::Result<()> {
+    let sample = match pool.and_then(|pool| pooled_sample(pool, data)) {
+        Some(sample) => sample,
+        None => one_off_sample(data)?,
+    };
+    // SAFETY: the sample and event queue are valid COM objects.
+    unsafe {
+        sample.SetSampleTime(time)?;
+        sample.SetSampleDuration((duration.as_nanos() / 100) as i64)?;
+        if let Some(token) = token {
+            sample.SetUnknown(&MFSampleExtension_Token, token)?;
+        }
+        queue.QueueEventParamUnk(MEMediaSample.0 as u32, &GUID::zeroed(), HRESULT(0), &sample)
+    }
+}
+
+/// A sample from `pool` holding a copy of `data`, or `None` if the pool is empty (Frame Server
+/// still holds every pooled sample) or its buffers don't fit `data`.
+fn pooled_sample(pool: &IMFVideoSampleAllocatorEx, data: &[u8]) -> Option<IMFSample> {
+    let len = u32::try_from(data.len()).ok()?;
+    // SAFETY: valid COM objects. `ContiguousCopyFrom` copies exactly `data` (checked against
+    // the buffer's contiguous length first) and handles the buffer's row pitch.
+    unsafe {
+        let sample = pool.AllocateSample().ok()?;
+        // A recycled sample keeps the attributes of its last trip (the previous request's
+        // token, anything Frame Server added).
+        sample.DeleteAllItems().ok()?;
+        let buffer = sample.GetBufferByIndex(0).ok()?;
+        let buffer_2d = buffer.cast::<IMF2DBuffer>().ok()?;
+        if buffer_2d.GetContiguousLength().ok()? != len {
+            return None;
+        }
+        buffer_2d.ContiguousCopyFrom(data).ok()?;
+        buffer.SetCurrentLength(len).ok()?;
+        Some(sample)
+    }
+}
+
+/// A new sample with a new buffer holding a copy of `data`.
+fn one_off_sample(data: &[u8]) -> windows_core::Result<IMFSample> {
     let len = u32::try_from(data.len()).map_err(|_| MF_E_INVALIDREQUEST)?;
     // SAFETY: a fresh buffer of `len` bytes; the locked pointer is valid for `len` bytes until
-    // Unlock. The sample and event queue are valid COM objects.
+    // Unlock.
     unsafe {
         let buffer = MFCreateMemoryBuffer(len)?;
         let mut ptr = std::ptr::null_mut();
@@ -423,12 +630,7 @@ fn send_sample(
         buffer.SetCurrentLength(len)?;
         let sample = MFCreateSample()?;
         sample.AddBuffer(&buffer)?;
-        sample.SetSampleTime(MFGetSystemTime())?;
-        sample.SetSampleDuration((duration.as_nanos() / 100) as i64)?;
-        if let Some(token) = token {
-            sample.SetUnknown(&MFSampleExtension_Token, token)?;
-        }
-        queue.QueueEventParamUnk(MEMediaSample.0 as u32, &GUID::zeroed(), HRESULT(0), &sample)
+        Ok(sample)
     }
 }
 
@@ -440,4 +642,42 @@ pub(crate) fn stream_attributes(stream: &MediaStream) -> windows_core::Result<IM
 /// The stream as the interface the source hands out.
 pub(crate) fn as_interface(stream: &windows_core::ComObject<MediaStream>) -> IMFMediaStream {
     stream.to_interface::<IMFMediaStream2>().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeline_steps_by_exactly_one_interval() {
+        let mut t = Timeline::new(30);
+        let start = 1_000_000_000;
+        // Wake-up jitter of a few ms doesn't reach the timestamps.
+        let jitter = [0, 120_000, -80_000, 140_000, 0, -50_000];
+        let times: Vec<i64> = (0..6)
+            .map(|n| t.next(start + n * 333_333 + jitter[n as usize]))
+            .collect();
+        assert_eq!(times[0], start);
+        for (n, time) in times.iter().enumerate() {
+            assert_eq!(*time, start + n as i64 * 10_000_000 / 30);
+        }
+        // No drift from rounding 1/30 s: after 30 frames, exactly one second.
+        for _ in 6..30 {
+            let n = t.n;
+            t.next(start + n * 333_333);
+        }
+        assert_eq!(t.next(start + 10_000_000), start + 10_000_000);
+    }
+
+    #[test]
+    fn timeline_reanchors_after_a_long_gap() {
+        let mut t = Timeline::new(30);
+        assert_eq!(t.next(0), 0);
+        assert_eq!(t.next(333_333), 333_333);
+        // Within two intervals of the slot: stays on the grid.
+        assert_eq!(t.next(666_666 + 600_000), 666_666);
+        // A second without requests: follows the clock again.
+        assert_eq!(t.next(20_000_000), 20_000_000);
+        assert_eq!(t.next(20_333_333), 20_333_333);
+    }
 }

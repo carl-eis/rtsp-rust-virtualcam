@@ -1,12 +1,14 @@
-//! The media types every camera offers: NV12 and RGB32 at 1080p, 720p and 480p, 30 and 15 fps.
+//! The media types every camera offers: NV12, YUY2, I420 and RGB32 at 1080p, 720p and 480p, 30
+//! and 15 fps. NV12 comes first: it is what the app decodes to, so it costs no conversion. YUY2
+//! is what most USB webcams offer, and some apps look for it first.
 
 use rtspcam_ipc::{PixelFormat, VideoFormat};
 use windows::Win32::Media::MediaFoundation::{
-    IMFMediaType, MF_E_INVALIDMEDIATYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE,
-    MF_MT_DEFAULT_STRIDE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE,
-    MF_MT_SUBTYPE, MFCreateMediaType, MFMediaType_Video, MFVideoFormat_NV12, MFVideoFormat_RGB32,
-    MFVideoInterlace_Progressive,
+    IMFMediaType, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE,
+    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
+    MFCreateMediaType, MFMediaType_Video, MFVideoFormat_I420, MFVideoFormat_NV12,
+    MFVideoFormat_RGB32, MFVideoFormat_YUY2, MFVideoInterlace_Progressive,
 };
 
 const SIZES: [(u32, u32); 3] = [(1280, 720), (1920, 1080), (640, 480)];
@@ -16,7 +18,12 @@ const RATES: [u32; 2] = [30, 15];
 /// since many apps simply take the first one.
 pub(crate) fn advertised(preferred: Option<(u32, u32, u32)>) -> Vec<VideoFormat> {
     let mut all = Vec::new();
-    for pixel_format in [PixelFormat::Nv12, PixelFormat::Rgb32] {
+    for pixel_format in [
+        PixelFormat::Nv12,
+        PixelFormat::Yuyv,
+        PixelFormat::I420,
+        PixelFormat::Rgb32,
+    ] {
         for fps in RATES {
             for (width, height) in SIZES {
                 all.push(VideoFormat {
@@ -48,8 +55,9 @@ pub(crate) fn media_type(f: &VideoFormat) -> windows_core::Result<IMFMediaType> 
         PixelFormat::Nv12 => (MFVideoFormat_NV12, f.width),
         // Positive stride: top-down rows, which is how frames arrive over IPC.
         PixelFormat::Rgb32 => (MFVideoFormat_RGB32, f.width * 4),
-        // For push backends on other OSes; never in `advertised`.
-        PixelFormat::Yuyv | PixelFormat::I420 => return Err(MF_E_INVALIDMEDIATYPE.into()),
+        PixelFormat::Yuyv => (MFVideoFormat_YUY2, f.width * 2),
+        // The stride of the Y plane; each chroma plane has half of it.
+        PixelFormat::I420 => (MFVideoFormat_I420, f.width),
     };
     let size = f.frame_len() as u32;
     // SAFETY: a fresh media type; plain attribute setters.
@@ -80,6 +88,10 @@ pub(crate) fn format_of(t: &IMFMediaType) -> Option<VideoFormat> {
         let subtype = t.GetGUID(&MF_MT_SUBTYPE).ok()?;
         let pixel_format = if subtype == MFVideoFormat_NV12 {
             PixelFormat::Nv12
+        } else if subtype == MFVideoFormat_YUY2 {
+            PixelFormat::Yuyv
+        } else if subtype == MFVideoFormat_I420 {
+            PixelFormat::I420
         } else if subtype == MFVideoFormat_RGB32 {
             PixelFormat::Rgb32
         } else {
@@ -102,9 +114,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twelve_formats_nv12_720p30_first() {
+    fn twenty_four_formats_nv12_720p30_first() {
         let all = advertised(None);
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 24);
         assert_eq!(
             all[0],
             VideoFormat {
@@ -121,8 +133,46 @@ mod tests {
         let all = advertised(Some((1920, 1080, 15)));
         assert_eq!((all[0].width, all[0].height, all[0].fps), (1920, 1080, 15));
         assert_eq!(all[0].pixel_format, PixelFormat::Nv12);
-        assert_eq!(all.len(), 12);
+        assert_eq!(all.len(), 24);
         // Unknown preferences are ignored.
         assert_eq!(advertised(Some((1, 1, 1))), advertised(None));
+    }
+
+    #[test]
+    fn every_pixel_format_offered_and_read_back() {
+        let all = advertised(None);
+        for pixel_format in [
+            PixelFormat::Nv12,
+            PixelFormat::Yuyv,
+            PixelFormat::I420,
+            PixelFormat::Rgb32,
+        ] {
+            assert_eq!(
+                all.iter()
+                    .filter(|f| f.pixel_format == pixel_format)
+                    .count(),
+                6
+            );
+        }
+        // All NV12 types come before any other.
+        assert!(all[..6].iter().all(|f| f.pixel_format == PixelFormat::Nv12));
+        for f in &all {
+            let t = media_type(f).unwrap();
+            assert_eq!(format_of(&t), Some(*f));
+            // SAFETY: plain attribute getters on a valid media type.
+            let (stride, size) = unsafe {
+                (
+                    t.GetUINT32(&MF_MT_DEFAULT_STRIDE).unwrap(),
+                    t.GetUINT32(&MF_MT_SAMPLE_SIZE).unwrap(),
+                )
+            };
+            let expected = match f.pixel_format {
+                PixelFormat::Nv12 | PixelFormat::I420 => f.width,
+                PixelFormat::Yuyv => f.width * 2,
+                PixelFormat::Rgb32 => f.width * 4,
+            };
+            assert_eq!(stride, expected, "{f}");
+            assert_eq!(size as usize, f.frame_len(), "{f}");
+        }
     }
 }

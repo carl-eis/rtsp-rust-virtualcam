@@ -1,5 +1,5 @@
 //! CPU scaling of NV12 pictures to a target size, NV12 → BGRA conversion for the preview, and
-//! NV12 → YUYV / I420 for the push camera backends.
+//! NV12 → YUYV / I420 for the cameras that ask for them.
 //!
 //! Bilinear filtering with 8-bit fixed-point weights, with no dependencies, on every OS. With
 //! hardware decoding on Windows the decoder already shrinks pictures on the GPU to what
