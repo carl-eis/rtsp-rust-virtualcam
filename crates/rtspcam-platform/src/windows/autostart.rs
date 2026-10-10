@@ -6,8 +6,8 @@ use std::path::Path;
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RRF_RT_REG_SZ, RegCloseKey, RegDeleteValueW,
-    RegGetValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -56,8 +56,22 @@ fn command_line(exe: &Path) -> String {
 fn set_named(name: &str, command: Option<&str>) -> windows::core::Result<()> {
     let name = HSTRING::from(name);
     let mut key = HKEY::default();
+    // Created if missing: a new profile (or a CI runner) may have no Run key yet.
     // SAFETY: a valid key path and output handle; the key is closed below.
-    unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, KEY_SET_VALUE, &mut key) }.ok()?;
+    unsafe {
+        RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            None,
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+    }
+    .ok()?;
     let result = match command {
         Some(command) => {
             let data: Vec<u8> = command
