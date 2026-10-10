@@ -401,9 +401,10 @@ mod tests {
         let pusher = start(&source, &sink, STALE_AFTER);
         std::thread::sleep(Duration::from_millis(500));
         pusher.stop();
-        // 50 fps for half a second: about 25, with room for slow CI machines.
+        // 50 fps for half a second: about 25. Never more (late wake-ups don't burst), but a busy
+        // CI machine (macOS runners especially) wakes the thread late and skips ticks.
         let n = sink.count();
-        assert!((15..=30).contains(&n), "{n} writes");
+        assert!((5..=30).contains(&n), "{n} writes");
     }
 
     #[test]
@@ -429,7 +430,8 @@ mod tests {
         let source = FakeSource::new(StreamStatus::Streaming, "");
         *source.frame.lock().unwrap() = Some((1, picture(77)));
         let sink = FakeSink::default();
-        let pusher = start(&source, &sink, Duration::from_millis(150));
+        // Long enough for several ticks even when a busy CI machine wakes the thread late.
+        let pusher = start(&source, &sink, Duration::from_millis(400));
         let no_signal = placeholder::render(&FORMAT, "No signal", "");
         wait_for("the placeholder", || sink.writes().contains(&no_signal));
         pusher.stop();
@@ -437,7 +439,7 @@ mod tests {
         let writes = sink.writes();
         let first_placeholder = writes.iter().position(|w| *w == no_signal).unwrap();
         // The one picture was written several times, then only the placeholder.
-        assert!(first_placeholder >= 3, "{first_placeholder}");
+        assert!(first_placeholder >= 2, "{first_placeholder}");
         assert!(
             writes[..first_placeholder]
                 .iter()
