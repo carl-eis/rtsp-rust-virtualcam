@@ -7,7 +7,8 @@ Section numbers (§) refer to the headings inside each document.
 ## 1. Where the project stands (as of 2026-10-09, v1.1.0)
 
 - **Windows:** plan phases 0–7 are built; phase 8 (GPU path, soak, fuzzing, crash reports) has
-  not started. Several exit criteria still need a person (cameras in Discord/OBS/Camera app,
+  not started. The GPU path was re-planned for the cross-platform code in
+  [08.1](08.1-Plan-Phase-8.md). Several exit criteria still need a person (cameras in Discord/OBS/Camera app,
   installer on a clean VM).
 - **Cross-platform:** the OS-specific code is in `rtspcam-platform`, and the UI is Slint instead
   of winsafe. The app runs on Windows and Linux, and it builds and passes its tests on macOS.
@@ -29,6 +30,7 @@ Section numbers (§) refer to the headings inside each document.
 | 06 | [06-checkpoint-2026-10-09.md](06-checkpoint-2026-10-09.md) | Checkpoint | Phase status table, known problems | The status of every phase on one page (Windows) |
 | 07 | [07-progress-phase-6.md](07-progress-phase-6.md) | Progress | Phase 6 (ONVIF, brand templates, import/export, picture options) | ONVIF discovery, the `picture` config object, the `WM_CREATE` dialog bug |
 | 08 | [08-progress-phase-7.md](08-progress-phase-7.md) | Progress | Phase 7 (Inno Setup installer, release workflow) | Installer decisions and what is still unverified |
+| 08.1 | [08.1-Plan-Phase-8.md](08.1-Plan-Phase-8.md) | Plan | Phase 8 GPU path after the cross-platform refactor | **Current** GPU plan: measure first, D3D11 decode with copy-back, "Use hardware decoding" setting with device shown, early downscale; GPU frames into the camera deferred |
 | 09 | [09-cross-platform-plan.md](09-cross-platform-plan.md) | Plan | `rtspcam-platform`, `rtspcam-engine`, Slint | The traits at the OS boundary, the crate layout, where `cfg` is allowed |
 | 10 | [10-progress-cross-platform.md](10-progress-cross-platform.md) | Progress | Steps A–F of 09, CI on three OSes | **Current** crate layout and trait table; what still needs checking on each OS |
 | 11 | [11-virtual-cameras-linux-macos-plan.md](11-virtual-cameras-linux-macos-plan.md) | Plan | v4l2loopback (Linux), CoreMediaIO extension (macOS) | **Next work:** phases L and M (G is done) |
@@ -47,6 +49,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Code locations in `rtspcam-app/src/` (`manager.rs`, `source.rs`, `overlay.rs`, `backend.rs`, ...) | Moved to `rtspcam-engine` and `rtspcam-platform`: [09 §5](09-cross-platform-plan.md#5-where-each-file-goes) |
 | Placeholder pictures in `rtspcam-vcam/src/placeholder.rs`; "nothing built yet" in 11 | `rtspcam_ipc::placeholder`, phase G done: [12](12-progress-phase-g.md) |
 | `rust-version` 1.85 (02, 05, 06) | 1.92 ([10 §2](10-progress-cross-platform.md#2-decisions-beyond-the-plan)) |
+| 01 Phase 8 GPU bullet (D3D11 decode, Video Processor, DXGI samples into the camera) | Staged plan in [08.1](08.1-Plan-Phase-8.md): CPU NV12 stays the shared frame type; DXGI samples deferred |
 | CI "never run" / "unknown" (02–08) | Green on Windows, Linux and macOS ([10 §7](10-progress-cross-platform.md#7-step-e-ci)) |
 | Next free document number (04, 05, 06, 07) | 13. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
@@ -60,7 +63,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Build and test on Linux | [10 §7](10-progress-cross-platform.md#7-step-e-ci) (Docker command), [10 §5](10-progress-cross-platform.md#5-known-gaps) (system libraries) |
 | Do the checks that need a person | [10 §4](10-progress-cross-platform.md#4-not-verified), [08](08-progress-phase-7.md#not-verified-needs-a-person-ideally-on-a-vm), [07 §5](07-progress-phase-6.md#5-not-verified-needs-a-person), [06 §4](06-checkpoint-2026-10-09.md#4-verification-state) |
 | Add a virtual camera backend for Linux or macOS | [11](11-virtual-cameras-linux-macos-plan.md), [09 §4.1](09-cross-platform-plan.md#4-traits), the `Pusher` in [12 §1](12-progress-phase-g.md#pusher-rtspcam_platformpush) |
-| Start Phase 8 (Windows hardening) | [01 Phase 8](01-plan.md#phase-8-performance-robustness-and-compatibility), [03 §6](03-progress-phases-2-3.md#6-known-issues), [06 §5](06-checkpoint-2026-10-09.md#5-known-problems-and-rough-edges) |
+| Start Phase 8 (Windows hardening) | [08.1](08.1-Plan-Phase-8.md), [01 Phase 8](01-plan.md#phase-8-performance-robustness-and-compatibility), [03 §6](03-progress-phases-2-3.md#6-known-issues), [06 §5](06-checkpoint-2026-10-09.md#5-known-problems-and-rough-edges) |
 | Change the config format | [01 §3.2](01-plan.md#32-stream-definition-and-json-configuration), [02 §3](02-progress.md#3-what-exists-crate-by-crate), [07 picture options](07-progress-phase-6.md#per-camera-picture-options) |
 | Touch Media Foundation or retina code | [04 §3](04-session-2026-10-09.md#3-lessons-learned-the-non-obvious-parts) first |
 
@@ -113,6 +116,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Decoders per OS (MF on Windows, OpenH264 elsewhere) | [10 §1](10-progress-cross-platform.md#traits-all-re-exported-from-rtspcam_platform), [10 §5](10-progress-cross-platform.md#5-known-gaps) |
 | H.265 CRA workaround, MF output-buffer bug | [03 §5](03-progress-phases-2-3.md#5-decisions-and-deviations), [04 §3](04-session-2026-10-09.md#3-lessons-learned-the-non-obvious-parts) |
 | Latency, 4-stream run, 1-hour soak and memory drift | [03 §4.2](03-progress-phases-2-3.md#42-phase-2-exit-criteria) |
+| GPU path plan (D3D11 decode, early downscale) | [08.1](08.1-Plan-Phase-8.md) |
 | Colour range, CPU scaling, MJPEG gaps | [03 §6](03-progress-phases-2-3.md#6-known-issues) |
 
 ### Windows virtual camera (DLL and IPC)
