@@ -2,7 +2,7 @@
 
 Date: 2026-10-10. Continues [15 §4](15-obs-virtualcam-comparison.md#4-low-hanging-fruit), the
 low-hanging fixes from the OBS comparison, tracked in GitHub issue #12. Items 4.1, 4.2, 4.3 and
-4.5 are built. Item 4.4 (the v4l2loopback STREAMON check) needs a person; see §3.
+4.5 are built. Item 4.4 (the v4l2loopback STREAMON check) needs a person and moved to issue #17; see §3.
 
 ## 1. What was done
 
@@ -83,7 +83,7 @@ came from the pool. That covers NV12, RGB32, YUY2 and I420.
   (Ubuntu 24.04 / Debian 12) lists and opens the camera, as part of the browser checks in
   [13 §5](13-progress-phase-l.md). Only if it doesn't: `VIDIOC_STREAMON` after `S_FMT` in
   `rtspcam-platform/src/linux/v4l2.rs` (ignore `EINVAL`/`ENOTTY`, like OBS) and `STREAMOFF`
-  before closing. Issue #12 stays open for this.
+  before closing. Tracked in issue #17.
 - **Real apps through Frame Server:** the tests run the source in-process. Check with the DLL
   installed (`tools/vcam/install-dev.ps1`): the Windows Camera app, Teams and Chrome still open
   the camera and motion is smooth; an app that picks YUY2 or I420 (for example OBS's video

@@ -163,7 +163,7 @@ needed exists already: `PixelFormat::Yuyv`/`I420` in the protocol, `nv12_to_yuyv
 (keep NV12 first: it is the native format and cheapest). Update the `twelve_formats…` test.
 Mind the count: 4 pixel formats × 3 sizes × 2 rates = 24 types; that's fine for MF.
 
-### 4.4 Check the v4l2loopback STREAMON workaround *(test only, maybe a few lines)*
+### 4.4 Check the v4l2loopback STREAMON workaround *(test only, maybe a few lines)* — issue #17
 
 OBS calls `VIDIOC_STREAMON` on the output queue (and STREAMOFF on stop) where the module
 accepts it, which its comment says is 0.12.x–0.13.x. We never do. [13 §1](13-progress-phase-l.md)
