@@ -580,6 +580,11 @@ export global SettingsDialog {
     in-out property <int> level;
     in property <[string]> themes;
     in-out property <int> theme;
+    in-out property <bool> hardware-decoding;
+    // A graphics card that decodes was found (the checkbox can be used).
+    in property <bool> hardware-available;
+    // The device ("NVIDIA GeForce RTX 3060 (H.264, H.265)"), why there is none, or "Checking…".
+    in property <string> hardware-text;
     callback ok();
     callback cancel();
 }
@@ -616,6 +621,23 @@ export component SettingsSheet inherits Sheet {
         ComboBox {
             model: SettingsDialog.themes;
             current-index <=> SettingsDialog.theme;
+        }
+    }
+
+    VerticalLayout {
+        spacing: 2px;
+        CheckBox {
+            text: "Use hardware decoding";
+            enabled: SettingsDialog.hardware-available;
+            checked <=> SettingsDialog.hardware-decoding;
+        }
+
+        Label {
+            text: SettingsDialog.hardware-text;
+            wrap: word-wrap;
+            font-size: 12px;
+            // Greyed while the box is off or can't be used.
+            opacity: SettingsDialog.hardware-available && SettingsDialog.hardware-decoding ? 0.8 : 0.5;
         }
     }
 

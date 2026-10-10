@@ -348,8 +348,8 @@ Native Win32 UI built with `winsafe` (Common Controls v6 manifest, PerMonitorV2 
 **Exit:** Clean install, then add a camera, use it in Discord, reboot (the camera comes back if autostart is on), uninstall. Tested on a fresh Windows 11 VM with no leftover registry entries, files or cameras.
 
 ### Phase 8: Performance, robustness and compatibility
-- [ ] GPU path: D3D11 hardware decoding (DXVA) plus Video Processor MFT scaling, and DXGI samples into the virtual camera when the consumer provides a D3D manager. Target under 3% CPU per 1080p stream on a mid-range machine.
-- [ ] Shared-memory IPC if pipe throughput or latency turns out to be a bottleneck (decided in Phase 0).
+- [x] GPU path: D3D11 hardware decoding (DXVA) plus Video Processor MFT scaling, and DXGI samples into the virtual camera when the consumer provides a D3D manager. Target under 3% CPU per 1080p stream on a mid-range machine. *Re-planned in [08.1](08.1-Plan-Phase-8.md) and built without the DXGI samples (deferred), see [14](14-progress-phase-8.md).*
+- [x] Shared-memory IPC if pipe throughput or latency turns out to be a bottleneck (decided in Phase 0). *Measured in [14 §3](14-progress-phase-8.md#3-measurements): not a bottleneck, not built.*
 - [ ] Soak tests: 8 cameras for 24 h, network flapping, sleep/resume, user switching, Frame Server restarts.
 - [ ] Compatibility matrix in `documentation/`: Discord (desktop and browser), Teams (new), Zoom, Google Meet in Chrome/Edge, OBS, Windows Camera, Slack. Cover preview **and** what the remote party sees.
 - [ ] Fuzz the IPC frame parser and the config loader. Check sizes and bounds on every frame the DLL receives.

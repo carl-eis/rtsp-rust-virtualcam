@@ -44,12 +44,13 @@ Early development; version 1.3.0.
 |---|---|---|---|
 | App, stream list, live preview, dialogs, tray | yes | yes (tray needs a StatusNotifierItem host) | builds and passes its tests in CI; **not yet run** |
 | Virtual cameras | yes (checked through Frame Server; not yet confirmed in call apps) | yes, with [v4l2loopback](#virtual-cameras-on-linux); checked with ffmpeg and v4l2-ctl, not yet in browsers or call apps | not yet |
-| Decoding | H.264, H.265 (with the HEVC extension), MJPEG | H.264 only (OpenH264) | H.264 only (OpenH264) |
+| Decoding | H.264, H.265 (with the HEVC extension), MJPEG; H.264 and H.265 on the graphics card when it can | H.264 only (OpenH264) | H.264 only (OpenH264) |
 | Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
 | Start at login | Run key | XDG autostart | LaunchAgent |
 | Package | Inno Setup installer (not yet tried on a clean PC) | `.deb`, `.rpm` | none |
 
-Not built yet: the GPU decoding path and other hardening ([08.1](documentation/08.1-Plan-Phase-8.md)),
+Not built yet: the rest of the hardening (soak tests, compatibility matrix, fuzzing, crash
+reports; [08.1 §7](documentation/08.1-Plan-Phase-8.md#7-the-rest-of-phase-8-in-short)),
 and macOS virtual cameras ([11](documentation/11-virtual-cameras-linux-macos-plan.md)). The
 [documentation index](documentation/00-index.md) has the plans, progress records and the list
 of checks that still need a person.
@@ -66,6 +67,10 @@ of checks that still need a person.
 - **Import / export** (**File > Export / Import streams**) to move streams between PCs
   (passwords are not included).
 - **Tray:** `--minimized` starts in the tray, `--headless` runs without a window (Ctrl+C quits).
+- **Hardware decoding** (Windows): H.264 and H.265 are decoded on the graphics card when it can,
+  and pictures are shrunk there to the size apps ask for. **Settings** shows the card and can
+  turn it off; the stream details say `D3D11` when it is used. About 5 % of one CPU core per
+  1080p camera instead of 30–90 % ([14](documentation/14-progress-phase-8.md)).
 
 ## Virtual cameras on Linux
 
@@ -222,7 +227,7 @@ crates/
   rtspcam-pipeline/   RTSP ingest (retina), OpenH264 decoding, scaling, frame bus, reconnects
   rtspcam-onvif/      ONVIF: WS-Discovery scan, GetProfiles / GetStreamUri
   rtspcam-platform/   everything OS-specific, behind traits: virtual cameras, secrets,
-                      autostart, single instance, frame transport, MF decoder
+                      autostart, single instance, frame transport, MF decoder (and D3D11)
                       (windows/, linux/, macos/, unix/)
   rtspcam-engine/     camera manager, preview, status, stream form, overlay (portable)
   rtspcam-app/        rtspcam: the Slint desktop app (ui/*.slint + src/ui/)
@@ -276,7 +281,8 @@ Everything lives in one JSON file, `config.json`, in the per-user config folder:
 - Every field is optional and has a default. Unknown fields are kept when the file is saved.
   `start_with_windows` is the start-at-login setting on every OS. `theme` is `"system"`
   (default: follow the OS's light or dark mode), `"light"` or `"dark"`; the **Dark mode** /
-  **Light mode** button and **Settings** change it.
+  **Light mode** button and **Settings** change it. `hardware_decoding` (default `true`)
+  decodes on the graphics card when there is one that can; a computer without one ignores it.
 - Passwords are encrypted. Windows: DPAPI (current user only), stored as `dpapi:...`. Linux and
   macOS: with a key kept in Secret Service or the Keychain (`keyring:...`), or, if neither is
   available, in a `secret.key` file next to the config that only you can read (`keyfile:...`).
@@ -310,6 +316,11 @@ cargo run -p rtspcam-cli -- config import streams.json   # new ids, names made u
 ./tools/test-rtsp/start.ps1 -Docker -Detach                       # test RTSP server
 cargo run -p rtspcam-cli -- probe rtsp://127.0.0.1:8554/h264-720p
 cargo run -p rtspcam-cli -- view --all --seconds 30                # every stream in the config
+cargo run -p rtspcam-cli -- view rtsp://127.0.0.1:8554/h264-1080p --hardware on   # GPU decoding
+
+# CPU per stage with streams read like cameras (Markdown tables; see documentation/14):
+cargo run --release -p rtspcam-cli -- bench rtsp://127.0.0.1:8554/h264-1080p --hardware on
+cargo run --release -p rtspcam-cli -- bench rtsp://127.0.0.1:8554/h264-1080p --consumers 2 --pixel rgb32 --pipe
 
 cargo run -p rtspcam-cli -- onvif discover                         # ONVIF cameras on the LAN
 cargo run -p rtspcam-cli -- onvif streams 192.168.1.50 -u admin -p secret

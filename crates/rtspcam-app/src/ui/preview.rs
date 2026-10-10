@@ -125,7 +125,9 @@ fn run(shared: &Arc<Shared>, ui: &slint::Weak<MainWindow>) {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let target = *shared.target.lock().unwrap_or_else(PoisonError::into_inner);
-        let frame = preview.as_ref().and_then(|p| p.latest());
+        let frame = preview
+            .as_ref()
+            .and_then(|p| p.latest_for(target.0, target.1));
         drop(preview);
 
         let Some(frame) = frame else {
@@ -145,7 +147,7 @@ fn run(shared: &Arc<Shared>, ui: &slint::Weak<MainWindow>) {
             continue; // the preview box isn't laid out yet
         };
         let scaled = scaler.scale(&frame, w, h, FitMode::Stretch);
-        nv12_to_rgba(&scaled, Matrix::for_height(frame.height()), &mut rgba);
+        nv12_to_rgba(&scaled, Matrix::for_frame(&frame), &mut rgba);
         let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
         buffer.make_mut_bytes().copy_from_slice(&rgba);
         last = Some((frame, generation, target));
@@ -201,7 +203,7 @@ pub(crate) fn thumbnail(frame: &Frame, max: (u32, u32)) -> Option<SharedPixelBuf
     let (w, h) = fit_within(frame.width(), frame.height(), max)?;
     let scaled = Scaler::new().scale(frame, w, h, FitMode::Stretch);
     let mut rgba = Vec::new();
-    nv12_to_rgba(&scaled, Matrix::for_height(frame.height()), &mut rgba);
+    nv12_to_rgba(&scaled, Matrix::for_frame(frame), &mut rgba);
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
     buffer.make_mut_bytes().copy_from_slice(&rgba);
     Some(buffer)

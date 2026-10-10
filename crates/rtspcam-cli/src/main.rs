@@ -2,6 +2,7 @@
 //!
 //! - `config`: inspect and edit the config file.
 //! - `probe`, `view`: connect to RTSP streams and decode them without the app.
+//! - `bench`: measure where the CPU goes, with streams read like virtual cameras.
 //!
 //! - `onvif`: find ONVIF cameras and list their streams.
 //! - `vcam` (Windows only): register the media source DLL, create and list virtual cameras,
@@ -9,6 +10,7 @@
 
 #![allow(clippy::print_stdout)]
 
+mod bench;
 mod onvif;
 mod rtsp;
 // The media source DLL and Media Foundation cameras exist only on Windows.
@@ -49,6 +51,8 @@ enum Command {
     Probe(rtsp::ProbeArgs),
     /// Run streams through the full pipeline and print their status every second.
     View(rtsp::ViewArgs),
+    /// Measure CPU per stage with streams read like virtual cameras (see documentation/08.1).
+    Bench(bench::BenchArgs),
     /// Find ONVIF cameras and list their streams.
     #[command(subcommand)]
     Onvif(onvif::OnvifCommand),
@@ -125,6 +129,7 @@ fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         Command::Config(cmd) => config_command(&store, cmd),
         Command::Probe(args) => rtsp::probe(&store, args),
         Command::View(args) => rtsp::view(&store, args),
+        Command::Bench(args) => bench::run(&store, args),
         Command::Onvif(cmd) => onvif::run(&store, cmd),
         #[cfg(windows)]
         Command::Vcam(cmd) => vcam::run(&store, cmd),

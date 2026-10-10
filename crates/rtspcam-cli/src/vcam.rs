@@ -314,7 +314,7 @@ impl FrameSource for BusSource {
             }
             PixelFormat::Rgb32 => {
                 let scaled = scaler.scale(&frame, format.width, format.height, self.fit);
-                nv12_to_bgra(&scaled, Matrix::for_height(frame.height()), out);
+                nv12_to_bgra(&scaled, Matrix::for_frame(&frame), out);
             }
             PixelFormat::Yuyv => {
                 let scaled = scaler.scale(&frame, format.width, format.height, self.fit);

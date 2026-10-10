@@ -12,7 +12,7 @@
 //! | [`SingleInstance`] | named mutex + event | lock file + Unix socket | lock file + Unix socket |
 //! | [`FrameTransport`] | named pipes | Unix sockets | Unix sockets |
 //! | [`FileReplace`] | `ReplaceFileW` | copy, then rename | copy, then rename |
-//! | [`PlatformDecoders`] | Media Foundation | none (OpenH264) | none (OpenH264) |
+//! | [`PlatformDecoders`] | Media Foundation, on the GPU through D3D11 | none (OpenH264) | none (OpenH264) |
 //!
 //! [`SecretStore`], [`FileReplace`] and [`PlatformDecoders`] are defined next to the code that
 //! calls them (`rtspcam-core`, `rtspcam-pipeline`) and re-exported here.

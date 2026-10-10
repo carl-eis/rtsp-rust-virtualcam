@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use clap::Args;
 use rtspcam_core::config::ConfigStore;
+use rtspcam_core::profile;
 use rtspcam_core::{FitMode, Transport};
-use rtspcam_pipeline::decode::{DecoderChoice, create_decoder};
+use rtspcam_pipeline::decode::{self, DecoderChoice, create_decoder};
 use rtspcam_pipeline::scale::nv12_to_bgra;
 use rtspcam_pipeline::{
     Frame, Matrix, Pipeline, PipelineError, PipelineOptions, RtspSource, Scaler, SourceOptions,
@@ -34,6 +35,33 @@ pub(crate) struct Common {
     /// Decoder: auto, mf (Media Foundation) or openh264.
     #[arg(long, default_value_t = DecoderChoice::Auto)]
     pub(crate) decoder: DecoderChoice,
+    /// Hardware decoding (GPU) for the platform decoder: on or off.
+    #[arg(long, default_value = "off", value_parser = parse_on_off, action = clap::ArgAction::Set)]
+    pub(crate) hardware: bool,
+}
+
+impl Common {
+    /// Turns hardware decoding on or off as asked, and says what it found.
+    fn apply_hardware(&self) {
+        decode::set_use_hardware(self.hardware);
+        if self.hardware {
+            let until = Instant::now() + Duration::from_secs(5);
+            let mut found = decode::hardware_decoding();
+            while found == decode::HardwareDecoding::Checking && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(50));
+                found = decode::hardware_decoding();
+            }
+            println!("hardware:  {}", found.describe());
+        }
+    }
+}
+
+pub(crate) fn parse_on_off(s: &str) -> Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Ok(true),
+        "off" | "false" | "no" | "0" => Ok(false),
+        _ => Err("expected on or off".into()),
+    }
 }
 
 #[derive(Debug, Args)]
@@ -92,7 +120,7 @@ fn parse_fit(s: &str) -> Result<FitMode, String> {
     }
 }
 
-fn parse_size(s: &str) -> Result<(u32, u32), String> {
+pub(crate) fn parse_size(s: &str) -> Result<(u32, u32), String> {
     let (w, h) = s.split_once(['x', 'X']).ok_or("expected WIDTHxHEIGHT")?;
     let w: u32 = w.parse().map_err(|_| "bad width")?;
     let h: u32 = h.parse().map_err(|_| "bad height")?;
@@ -143,6 +171,7 @@ fn print_error(e: &PipelineError) {
 
 pub(crate) fn probe(store: &ConfigStore, args: ProbeArgs) -> anyhow::Result<ExitCode> {
     let (name, mut opts) = resolve(store, &args.target.stream, &args.target.common)?;
+    args.target.common.apply_hardware();
     opts.connect_timeout = Duration::from_secs(args.timeout);
     println!("stream:    {name}");
     println!("url:       {}", opts.url);
@@ -243,6 +272,7 @@ pub(crate) fn view(store: &ConfigStore, args: ViewArgs) -> anyhow::Result<ExitCo
         fs::create_dir_all(dir).with_context(|| format!("could not create {}", dir.display()))?;
     }
 
+    args.common.apply_hardware();
     let rt = runtime()?;
     let pipelines: Vec<Pipeline> = targets
         .into_iter()
@@ -259,24 +289,51 @@ pub(crate) fn view(store: &ConfigStore, args: ViewArgs) -> anyhow::Result<ExitCo
     let mut scaler = Scaler::new();
     let mut tick = 0u64;
     let name_width = pipelines.iter().map(|p| p.name().len()).max().unwrap_or(0);
+    let mut cpu_before = rtspcam_platform::desktop::process_cpu_time();
+    let mut cpu_at = Instant::now();
     loop {
         std::thread::sleep(interval);
         tick += 1;
         let (working_set, private) =
             rtspcam_platform::desktop::process_memory().unwrap_or_default();
+        let cpu_now = rtspcam_platform::desktop::process_cpu_time();
+        let cpu = match (cpu_before, cpu_now) {
+            (Some(a), Some(b)) => format!(
+                ", CPU {:.1} % of one core",
+                b.saturating_sub(a).as_secs_f64() / cpu_at.elapsed().as_secs_f64() * 100.0
+            ),
+            _ => String::new(),
+        };
+        (cpu_before, cpu_at) = (cpu_now, Instant::now());
         println!(
-            "[{:>6.0} s] memory: {} MB working set, {} MB private",
+            "[{:>6.0} s] memory: {} MB working set, {} MB private{cpu}",
             started.elapsed().as_secs_f64(),
             working_set / (1024 * 1024),
             private / (1024 * 1024)
         );
+        let stages: Vec<String> = profile::take()
+            .iter()
+            .filter(|t| t.calls > 0)
+            .map(|t| {
+                format!(
+                    "{} {:.2} ms x {}",
+                    t.stage.name(),
+                    t.per_call().as_secs_f64() * 1000.0,
+                    t.calls
+                )
+            })
+            .collect();
+        if !stages.is_empty() {
+            println!("  stages: {}", stages.join(", "));
+        }
         for p in &pipelines {
             let state = p.current_status();
             let detail = match &state {
                 StreamState::Streaming(s) => format!(
-                    " | {:.1} Mbit/s, latency {:.1} ms, {} decoded, {} errors, {} lost | {}",
+                    " | {:.1} Mbit/s, latency {:.1} ms, decode {:.2} ms, {} decoded, {} errors, {} lost | {}",
                     s.bitrate as f64 / 1e6,
                     s.latency.as_secs_f64() * 1000.0,
+                    s.decode_time.as_secs_f64() * 1000.0,
                     s.frames_decoded,
                     s.decode_errors,
                     s.packets_lost,
@@ -319,7 +376,7 @@ fn file_safe(name: &str) -> String {
 /// Writes a 32-bit top-down BMP.
 pub(crate) fn save_bmp(path: &Path, frame: &Frame) -> anyhow::Result<()> {
     let mut bgra = Vec::new();
-    nv12_to_bgra(frame, Matrix::for_height(frame.height()), &mut bgra);
+    nv12_to_bgra(frame, Matrix::for_frame(frame), &mut bgra);
     let (w, h) = (frame.width(), frame.height());
     let mut file = Vec::with_capacity(54 + bgra.len());
     file.extend_from_slice(b"BM");

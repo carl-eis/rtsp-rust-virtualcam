@@ -12,8 +12,8 @@ use rtspcam_core::config::{CopyThenRename, FileReplace};
 use crate::login_items::XdgAutostart;
 use crate::unix::instance::LockFile;
 use crate::unix::secrets::{KeyFile, Keyring, SealedStore};
-pub(crate) use crate::unix::termination_requested;
 use crate::unix::transport::UnixSockets;
+pub(crate) use crate::unix::{process_cpu_time, termination_requested};
 use crate::{Autostart, FrameTransport, SecretStore, SingleInstance, VirtualCameraBackend};
 
 pub(crate) fn install() {

@@ -1,33 +1,46 @@
-//! Media Foundation decoder MFTs (H.264, H.265, MJPEG) in synchronous software mode.
+//! Media Foundation decoder MFTs (H.264, H.265, MJPEG), synchronous.
 //!
 //! The decoder is found with `MFTEnumEx`, given the compressed input type, and asked for NV12
 //! output (or I420/YV12/YUY2, converted to NV12 on the CPU). Resolution changes in the stream
 //! (`MF_E_TRANSFORM_STREAM_CHANGE`) renegotiate the output type.
+//!
+//! With hardware decoding on (and a graphics card that decodes the codec, see [`gpu`]), the
+//! same MFT is given the shared Direct3D 11 device manager and decodes on the GPU. Its output
+//! samples are then textures, copied back into ordinary [`Frame`]s by [`CopyBack`], which
+//! also shrinks them on the GPU when consumers need less. If anything about the GPU fails, the
+//! stream falls back to software (at creation here; while decoding through
+//! [`ErrorKind::DecoderLost`], which makes the pipeline create a new decoder).
+//!
+//! [`gpu`]: super::gpu
 
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 use std::time::Duration;
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING,
+    IMFActivate, IMFDXGIBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_NOTACCEPTING,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE, MF_E_TRANSFORM_TYPE_NOT_SET,
     MF_LOW_LATENCY, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE,
-    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_VERSION, MFCreateMediaType,
-    MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET, MFShutdown,
-    MFStartup, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_LOCALMFT,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_VERSION,
+    MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET,
+    MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_LOCALMFT,
     MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
-    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_HEVC,
-    MFVideoFormat_I420, MFVideoFormat_IYUV, MFVideoFormat_MJPG, MFVideoFormat_NV12,
-    MFVideoFormat_YUY2, MFVideoFormat_YV12, MFVideoInterlace_Progressive,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea,
+    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_I420, MFVideoFormat_IYUV,
+    MFVideoFormat_MJPG, MFVideoFormat_NV12, MFVideoFormat_YUY2, MFVideoFormat_YV12,
+    MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
-use windows_core::GUID;
+use windows_core::{GUID, Interface as _};
 
-use rtspcam_pipeline::decode::{ArrivalLog, Decoder, PlatformDecoders, stamp};
+use super::gpu::{CopyBack, Gpu, Hardware};
+use rtspcam_pipeline::decode::{ArrivalLog, Decoder, HardwareDecoding, PlatformDecoders, stamp};
 use rtspcam_pipeline::frame::{Chroma, Yuv420Planes, yuy2_to_frame};
 use rtspcam_pipeline::{EncodedFrame, ErrorKind, Frame, PipelineError, VideoCodec};
 
@@ -41,16 +54,41 @@ const OUTPUT_PREFERENCE: [GUID; 5] = [
 ];
 
 /// Media Foundation as the pipeline's platform decoders.
-#[derive(Debug, Default)]
-pub(crate) struct MfDecoders;
+#[derive(Debug)]
+pub(crate) struct MfDecoders {
+    hardware: Arc<Hardware>,
+}
+
+impl MfDecoders {
+    /// Also starts looking for a graphics card that decodes video, in the background.
+    pub(crate) fn new() -> Self {
+        Self {
+            hardware: Hardware::start(),
+        }
+    }
+}
 
 impl PlatformDecoders for MfDecoders {
     fn create(
         &self,
         codec: VideoCodec,
         size: Option<(u32, u32)>,
+        hardware: bool,
     ) -> Result<Box<dyn Decoder>, PipelineError> {
-        Ok(Box::new(MfDecoder::new(codec, size)?))
+        // MJPEG has no Direct3D 11 mode.
+        let gpu = (hardware && codec != VideoCodec::Mjpeg)
+            .then(|| self.hardware.device(codec))
+            .flatten();
+        let Some(gpu) = gpu else {
+            return Ok(Box::new(MfDecoder::new(codec, size, None, &self.hardware)?));
+        };
+        match MfDecoder::new(codec, size, Some(gpu), &self.hardware) {
+            Ok(d) => Ok(Box::new(d)),
+            Err(e) => {
+                tracing::warn!(error = %e, "hardware decoder failed to start; decoding in software");
+                Ok(Box::new(MfDecoder::new(codec, size, None, &self.hardware)?))
+            }
+        }
     }
 
     fn unavailable_hint(&self) -> Option<&'static str> {
@@ -58,6 +96,14 @@ impl PlatformDecoders for MfDecoders {
             "For H.265 install \"HEVC Video Extensions\" from the Microsoft Store, \
              or switch the camera (or its sub stream) to H.264.",
         )
+    }
+
+    fn hardware(&self) -> HardwareDecoding {
+        self.hardware.status()
+    }
+
+    fn set_use_hardware(&self, on: bool) {
+        self.hardware.set_on(on);
     }
 }
 
@@ -137,7 +183,16 @@ struct OutputFormat {
 pub(crate) struct MfDecoder {
     // Field order matters: COM objects must be released before Media Foundation shuts down.
     transform: IMFTransform,
+    /// Set when the MFT decodes on the GPU (Direct3D 11 mode).
+    copy_back: Option<CopyBack>,
+    hardware: Arc<Hardware>,
+    /// The MFT's friendly name.
+    mft_name: String,
+    /// What `name()` shows: says "D3D11" once a picture came from the GPU.
     name: String,
+    on_gpu: bool,
+    pictures: u64,
+    limit: Option<(u32, u32)>,
     output: Option<OutputFormat>,
     /// Our own output sample, when the MFT doesn't allocate them.
     out_sample: Option<(IMFSample, u32)>,
@@ -156,7 +211,13 @@ impl std::fmt::Debug for MfDecoder {
 }
 
 impl MfDecoder {
-    pub(crate) fn new(codec: VideoCodec, size: Option<(u32, u32)>) -> Result<Self, PipelineError> {
+    /// A decoder for `codec`; on `gpu` (Direct3D 11 mode) if given and the MFT supports it.
+    pub(crate) fn new(
+        codec: VideoCodec,
+        size: Option<(u32, u32)>,
+        gpu: Option<Arc<Gpu>>,
+        hardware: &Arc<Hardware>,
+    ) -> Result<Self, PipelineError> {
         let runtime = MfRuntime::start()?;
         let subtype = match codec {
             VideoCodec::H264 => MFVideoFormat_H264,
@@ -174,12 +235,35 @@ impl MfDecoder {
             ),
         })?;
 
+        let mut copy_back = None;
         // SAFETY: the transform is a valid MFT; all calls below follow the MFT protocol
-        // (attributes, input type, output type, then streaming messages).
+        // (attributes, the D3D manager, input type, output type, then streaming messages).
         unsafe {
             // Ask for output as soon as a picture is decodable instead of buffering a GOP.
-            if let Ok(attrs) = transform.GetAttributes() {
+            let attrs = transform.GetAttributes().ok();
+            if let Some(attrs) = &attrs {
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
+            if let Some(gpu) = gpu {
+                let aware = attrs
+                    .as_ref()
+                    .and_then(|a| a.GetUINT32(&MF_SA_D3D11_AWARE).ok())
+                    .unwrap_or(0)
+                    != 0;
+                if !aware {
+                    tracing::info!(decoder = %mft_name, "no Direct3D 11 mode; decoding in software");
+                } else {
+                    match transform
+                        .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, gpu.manager.as_raw() as usize)
+                    {
+                        Ok(()) => copy_back = Some(CopyBack::new(gpu)),
+                        Err(e) => tracing::warn!(
+                            decoder = %mft_name,
+                            error = %e,
+                            "the decoder refused the graphics device; decoding in software"
+                        ),
+                    }
+                }
             }
 
             let input = MFCreateMediaType().mf()?;
@@ -203,7 +287,13 @@ impl MfDecoder {
 
         let mut decoder = Self {
             transform,
+            copy_back,
+            hardware: hardware.clone(),
             name: format!("Media Foundation ({mft_name})"),
+            mft_name,
+            on_gpu: false,
+            pictures: 0,
+            limit: None,
             output: None,
             out_sample: None,
             mft_provides_samples: false,
@@ -333,16 +423,36 @@ impl MfDecoder {
     }
 
     /// Copies a decoded sample into an NV12 [`Frame`].
-    fn convert(&self, sample: &IMFSample) -> Result<Option<Frame>, PipelineError> {
+    fn convert(&mut self, sample: &IMFSample) -> Result<Option<Frame>, PipelineError> {
         let Some(fmt) = self.output else {
             return Ok(None);
         };
         // SAFETY: the sample comes from ProcessOutput. The locked pointer is valid for
         // `len` bytes until Unlock, and the slice built from it doesn't outlive the lock.
+        // GetResource hands out one reference to the texture, owned by `from_raw`.
         unsafe {
             let pts = sample.GetSampleTime().map_or(Duration::ZERO, |t| {
                 Duration::from_nanos(t.max(0) as u64 * 100)
             });
+            // In Direct3D 11 mode the picture is a texture, unless the MFT fell back to
+            // software for this stream on its own; check every sample.
+            let dxgi = sample
+                .GetBufferByIndex(0)
+                .ok()
+                .and_then(|b| b.cast::<IMFDXGIBuffer>().ok());
+            self.set_on_gpu(dxgi.is_some());
+            if let (Some(dxgi), Some(copy_back)) = (dxgi, self.copy_back.as_mut()) {
+                let mut raw = std::ptr::null_mut();
+                dxgi.GetResource(&ID3D11Texture2D::IID, &mut raw).mf()?;
+                let texture = ID3D11Texture2D::from_raw(raw);
+                if CopyBack::handles(&texture) {
+                    let index = dxgi.GetSubresourceIndex().mf()?;
+                    let frame = copy_back
+                        .copy(&texture, index, fmt.visible, self.limit)
+                        .mf()?;
+                    return Ok(frame.map(|f| stamp(f, pts, &self.arrivals)));
+                }
+            }
             let buffer = sample.ConvertToContiguousBuffer().mf()?;
             let mut ptr = std::ptr::null_mut();
             let mut len = 0u32;
@@ -355,12 +465,45 @@ impl MfDecoder {
     }
 }
 
-impl Decoder for MfDecoder {
-    fn name(&self) -> &str {
-        &self.name
+impl MfDecoder {
+    fn set_on_gpu(&mut self, on: bool) {
+        if on != self.on_gpu {
+            self.on_gpu = on;
+            self.name = if on {
+                format!("Media Foundation ({}, D3D11)", self.mft_name)
+            } else {
+                format!("Media Foundation ({})", self.mft_name)
+            };
+        }
     }
 
-    fn decode(&mut self, frame: &EncodedFrame, out: &mut Vec<Frame>) -> Result<(), PipelineError> {
+    /// In Direct3D 11 mode, a lost device or a failure before the first picture means this
+    /// decoder can't go on: the pipeline replaces it (in software after an early failure).
+    fn classify(&self, e: PipelineError) -> PipelineError {
+        let Some(copy_back) = &self.copy_back else {
+            return e;
+        };
+        if copy_back.gpu().is_lost() {
+            self.hardware.lost(copy_back.gpu());
+            return PipelineError::new(
+                ErrorKind::DecoderLost,
+                format!("the graphics device was lost ({e})"),
+            );
+        }
+        if self.pictures == 0 {
+            return PipelineError::new(
+                ErrorKind::DecoderLost,
+                format!("hardware decoding failed ({e})"),
+            );
+        }
+        e
+    }
+
+    fn decode_frame(
+        &mut self,
+        frame: &EncodedFrame,
+        out: &mut Vec<Frame>,
+    ) -> Result<(), PipelineError> {
         self.arrivals.push(frame.pts, frame.received);
         // SAFETY: a fresh sample with one memory buffer; the locked pointer is valid for the
         // buffer's max length (at least `frame.data.len()`) until Unlock.
@@ -398,6 +541,24 @@ impl Decoder for MfDecoder {
             ErrorKind::Decode,
             format!("{} stopped accepting input", self.name),
         ))
+    }
+}
+
+impl Decoder for MfDecoder {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn decode(&mut self, frame: &EncodedFrame, out: &mut Vec<Frame>) -> Result<(), PipelineError> {
+        let before = out.len();
+        let result = self.decode_frame(frame, out);
+        self.pictures += (out.len() - before) as u64;
+        result.map_err(|e| self.classify(e))
+    }
+
+    fn limit_size(&mut self, max: Option<(u32, u32)>) {
+        // Only pictures decoded on the GPU are shrunk; in software the camera's scaler does it.
+        self.limit = max;
     }
 }
 

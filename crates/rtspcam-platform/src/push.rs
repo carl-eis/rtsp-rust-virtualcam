@@ -25,6 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use rtspcam_core::profile::{self, Stage};
 use rtspcam_ipc::placeholder::{self, STALE_AFTER};
 use rtspcam_ipc::{FrameSource, VideoFormat};
 
@@ -211,6 +212,7 @@ impl Delivery {
             .fresh_at
             .is_some_and(|at| at.elapsed() < self.stale_after);
         let result = if live {
+            let _t = profile::time(Stage::Deliver);
             self.sink.write(&self.frame)
         } else {
             self.update_placeholder();

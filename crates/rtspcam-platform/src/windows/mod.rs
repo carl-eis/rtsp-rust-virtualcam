@@ -9,6 +9,7 @@ mod camera;
 mod desktop;
 mod dpapi;
 mod files;
+mod gpu;
 mod instance;
 mod mf_decoder;
 mod pipe;
@@ -16,7 +17,7 @@ mod pipe;
 use std::sync::Arc;
 
 pub(crate) use desktop::{
-    attach_parent_console, open_folder, process_memory, termination_requested,
+    attach_parent_console, open_folder, process_cpu_time, process_memory, termination_requested,
 };
 
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
 
 pub(crate) fn install() {
     rtspcam_core::secret::install_store(secret_store());
-    rtspcam_pipeline::decode::install_platform_decoders(Box::new(mf_decoder::MfDecoders));
+    rtspcam_pipeline::decode::install_platform_decoders(Box::new(mf_decoder::MfDecoders::new()));
 }
 
 pub(crate) fn camera_backend() -> Arc<dyn VirtualCameraBackend> {

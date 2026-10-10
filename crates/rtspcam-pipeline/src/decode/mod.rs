@@ -14,6 +14,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::{ErrorKind, PipelineError};
@@ -26,29 +27,151 @@ pub trait Decoder {
 
     /// Decodes one access unit and appends any finished pictures to `out` (decoders with
     /// reordering may return none for a while, or several at once).
+    ///
+    /// [`ErrorKind::DecoderLost`] means this decoder can't go on; the pipeline drops it and
+    /// creates a new one at the next key frame. Other errors skip to the next key frame with
+    /// the same decoder.
     fn decode(&mut self, frame: &EncodedFrame, out: &mut Vec<Frame>) -> Result<(), PipelineError>;
+
+    /// Asks for pictures no larger than needed to cover `max` (width, height): a decoder that
+    /// can shrink pictures cheaply (on the GPU) scales them, keeping their shape, by
+    /// `min(1, max(max_w / width, max_h / height))`, so the result is at least `max_w` wide or
+    /// at least `max_h` high. `None` means full size. Decoders that can't do it cheaply ignore
+    /// it (the default); the camera's scaler still makes the exact output size.
+    fn limit_size(&mut self, _max: Option<(u32, u32)>) {}
+}
+
+/// The size a picture of `width` x `height` shrinks to under [`Decoder::limit_size`]: the
+/// smallest even size with the same shape that still covers `max` in one direction, never
+/// larger than the picture.
+pub fn limited_size(width: u32, height: u32, max: Option<(u32, u32)>) -> (u32, u32) {
+    let Some((mw, mh)) = max else {
+        return (width, height);
+    };
+    if width == 0 || height == 0 || mw >= width || mh >= height {
+        return (width, height);
+    }
+    let (w, h, mw, mh) = (
+        u64::from(width),
+        u64::from(height),
+        u64::from(mw),
+        u64::from(mh),
+    );
+    // The larger of mw / w and mh / h decides, compared without division.
+    let (sw, sh) = if mw * h >= mh * w {
+        (mw, (h * mw).div_ceil(w))
+    } else {
+        ((w * mh).div_ceil(h), mh)
+    };
+    let even_up = |v: u64| (v.max(2) + 1) & !1;
+    (even_up(sw).min(w) as u32, even_up(sh).min(h) as u32)
+}
+
+/// What hardware decoding this computer has, for the "Use hardware decoding" setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HardwareDecoding {
+    /// Still finding out (the check runs on a background thread at startup).
+    Checking,
+    /// A device that can decode; `codecs` are the ones it takes.
+    Available {
+        device: String,
+        codecs: Vec<VideoCodec>,
+    },
+    /// Why not, in words for the user.
+    Unavailable(String),
+}
+
+impl HardwareDecoding {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available { .. })
+    }
+
+    /// One line for the UI and logs, for example "NVIDIA GeForce RTX 3060 (H.264, H.265)".
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Checking => "Checking…".to_owned(),
+            Self::Available { device, codecs } => {
+                let codecs: Vec<&str> = codecs.iter().map(|c| c.name()).collect();
+                format!("{device} ({})", codecs.join(", "))
+            }
+            Self::Unavailable(why) => why.clone(),
+        }
+    }
 }
 
 /// The OS's own video decoders (system codecs, possibly hardware).
 ///
-/// - Windows: Media Foundation decoder MFTs (H.264, H.265 with the HEVC extension, MJPEG).
+/// - Windows: Media Foundation decoder MFTs (H.264, H.265 with the HEVC extension, MJPEG),
+///   decoding on the GPU through Direct3D 11 when hardware decoding is on.
 /// - Linux and macOS: none yet; H.264 goes to OpenH264. VA-API or VideoToolbox would go here.
 pub trait PlatformDecoders: Send + Sync + 'static {
     /// Creates a decoder for `codec`. `size` is the stream's picture size if already known;
-    /// some decoders (MJPEG) need it up front. Called on the decode thread.
+    /// some decoders (MJPEG) need it up front. `hardware: false` asks for a software decoder
+    /// even when hardware decoding is on (this stream's hardware decoder failed). Called on
+    /// the decode thread.
     fn create(
         &self,
         codec: VideoCodec,
         size: Option<(u32, u32)>,
+        hardware: bool,
     ) -> Result<Box<dyn Decoder>, PipelineError>;
 
     /// What to tell the user when no decoder handles a codec, if this OS has advice.
     fn unavailable_hint(&self) -> Option<&'static str> {
         None
     }
+
+    /// What hardware decoding this computer has. Found out once, then remembered.
+    fn hardware(&self) -> HardwareDecoding {
+        HardwareDecoding::Unavailable("Not available on this system yet".to_owned())
+    }
+
+    /// Turns hardware decoding on or off for decoders created from now on.
+    fn set_use_hardware(&self, _on: bool) {}
 }
 
 static PLATFORM: OnceLock<Box<dyn PlatformDecoders>> = OnceLock::new();
+
+/// Whether hardware decoding was asked for (off until someone turns it on).
+static USE_HARDWARE: AtomicBool = AtomicBool::new(false);
+/// Bumped when [`set_use_hardware`] changes the setting, so running pipelines replace their
+/// decoders.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// What hardware decoding this computer has (`Unavailable` when no platform decoders are
+/// installed).
+pub fn hardware_decoding() -> HardwareDecoding {
+    platform().map_or_else(
+        || HardwareDecoding::Unavailable("Not available on this system yet".to_owned()),
+        PlatformDecoders::hardware,
+    )
+}
+
+/// Turns hardware decoding on or off. Off by default in every process. Running pipelines
+/// switch decoders at their next key frame, without reconnecting.
+pub fn set_use_hardware(on: bool) {
+    if let Some(p) = platform() {
+        p.set_use_hardware(on);
+    }
+    if USE_HARDWARE.swap(on, Ordering::SeqCst) != on {
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        tracing::info!(on, "hardware decoding switched");
+    }
+}
+
+/// Whether hardware decoding is turned on (not whether it is available).
+pub fn uses_hardware() -> bool {
+    USE_HARDWARE.load(Ordering::SeqCst)
+}
+
+/// Changes whenever decoders created before should be replaced.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::SeqCst)
+}
+
+/// Held by tests that flip the process-wide hardware switch.
+#[cfg(test)]
+pub(crate) static HARDWARE_SWITCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Sets the OS decoders used by [`DecoderChoice::Platform`] and [`DecoderChoice::Auto`] in this
 /// process. Call once at startup. Returns `false` (keeping the first) if some were installed.
@@ -110,10 +233,20 @@ pub fn create_decoder(
     size: Option<(u32, u32)>,
     choice: DecoderChoice,
 ) -> Result<Box<dyn Decoder>, PipelineError> {
+    create_decoder_with(codec, size, choice, true)
+}
+
+/// [`create_decoder`], with `hardware: false` to insist on software decoding.
+pub fn create_decoder_with(
+    codec: VideoCodec,
+    size: Option<(u32, u32)>,
+    choice: DecoderChoice,
+    hardware: bool,
+) -> Result<Box<dyn Decoder>, PipelineError> {
     match choice {
-        DecoderChoice::Platform => create_platform(codec, size),
+        DecoderChoice::Platform => create_platform(codec, size, hardware),
         DecoderChoice::OpenH264 => create_openh264(codec),
-        DecoderChoice::Auto => match create_platform(codec, size) {
+        DecoderChoice::Auto => match create_platform(codec, size, hardware) {
             Ok(d) => Ok(d),
             Err(e) if codec == VideoCodec::H264 && cfg!(feature = "openh264") => {
                 if platform().is_some() {
@@ -129,9 +262,10 @@ pub fn create_decoder(
 fn create_platform(
     codec: VideoCodec,
     size: Option<(u32, u32)>,
+    hardware: bool,
 ) -> Result<Box<dyn Decoder>, PipelineError> {
     match platform() {
-        Some(p) => p.create(codec, size),
+        Some(p) => p.create(codec, size, hardware),
         None => Err(PipelineError::new(
             ErrorKind::DecoderUnavailable,
             format!("there is no {} decoder on this platform", codec.name()),
@@ -209,6 +343,39 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DecoderUnavailable);
         assert!(err.to_string().contains("H.265"), "{err}");
         assert!(err.kind().hint().unwrap().contains("H.264"));
+    }
+
+    #[test]
+    fn limited_sizes_cover_the_limit_and_keep_the_shape() {
+        assert_eq!(limited_size(3840, 2160, None), (3840, 2160));
+        assert_eq!(limited_size(3840, 2160, Some((1920, 1080))), (1920, 1080));
+        // Never larger than the picture.
+        assert_eq!(limited_size(1280, 720, Some((1920, 1080))), (1280, 720));
+        // A 4:3 picture for a 16:9 limit covers the width.
+        assert_eq!(limited_size(2560, 1920, Some((1280, 720))), (1280, 960));
+        // A portrait limit (a rotated camera) covers the height.
+        assert_eq!(limited_size(3840, 2160, Some((720, 1280))), (2276, 1280));
+        // Odd results round up to even.
+        let (w, h) = limited_size(2592, 1944, Some((641, 0)));
+        assert!(w >= 641 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
+    }
+
+    #[test]
+    fn hardware_switch_bumps_the_generation_on_change_only() {
+        let _lock = HARDWARE_SWITCH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        set_use_hardware(false);
+        let g = generation();
+        set_use_hardware(true);
+        assert!(uses_hardware());
+        assert_eq!(generation(), g + 1);
+        set_use_hardware(true);
+        assert_eq!(generation(), g + 1);
+        set_use_hardware(false);
+        assert_eq!(generation(), g + 2);
+        // Without platform decoders there is no hardware decoding.
+        assert!(!hardware_decoding().is_available());
     }
 
     #[test]

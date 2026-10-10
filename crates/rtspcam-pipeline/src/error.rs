@@ -24,6 +24,10 @@ pub enum ErrorKind {
     DecoderUnavailable,
     /// The decoder failed on the stream's data.
     Decode,
+    /// The decoder can't go on (its graphics device was removed or reset, or hardware decoding
+    /// failed before the first picture). The pipeline replaces it at the next key frame
+    /// without reconnecting.
+    DecoderLost,
     /// Connected, but no pictures arrived for too long.
     Stalled,
     /// The server ended the stream.
