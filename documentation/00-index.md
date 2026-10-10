@@ -43,6 +43,7 @@ Section numbers (§) refer to the headings inside each document.
 | 12 | [12-progress-phase-g.md](12-progress-phase-g.md) | Progress | Phase G of 11 | **Current** `Pusher`/`FrameSink`, shared placeholder, new pixel formats, on-demand without reader info |
 | 13 | [13-progress-phase-l.md](13-progress-phase-l.md) | Progress | Phase L of 11 | **Current** v4l2loopback facts per version, the Linux backend, `.deb`/`.rpm`, what still needs a person |
 | 14 | [14-progress-phase-8.md](14-progress-phase-8.md) | Progress | Steps 8.0–8.3 of 08.1 | **Current** hardware decoding (D3D11, copy-back, fence), the setting, decoder swap without reconnect, size limits, the `bench` command and the CPU measurements before/after |
+| 15 | [15-obs-virtualcam-comparison.md](15-obs-virtualcam-comparison.md) | Review | Virtual cameras vs OBS Studio's (Windows, Linux, macOS) | **Current** missing features, low-hanging fixes (pacing timer, timestamps, YUY2), lessons for phase M |
 
 ### Which documents are current
 
