@@ -27,12 +27,12 @@ use windows::Win32::Media::MediaFoundation::{
     MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET,
     MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_LOCALMFT,
     MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea,
-    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_I420, MFVideoFormat_IYUV,
-    MFVideoFormat_MJPG, MFVideoFormat_NV12, MFVideoFormat_YUY2, MFVideoFormat_YV12,
-    MFVideoInterlace_Progressive,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_HEVC,
+    MFVideoFormat_I420, MFVideoFormat_IYUV, MFVideoFormat_MJPG, MFVideoFormat_NV12,
+    MFVideoFormat_YUY2, MFVideoFormat_YV12, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -503,6 +503,13 @@ impl MfDecoder {
         if self.pictures == 0 {
             self.early_failures += 1;
             if self.early_failures < EARLY_FAILURES_LOST {
+                // The next key frame starts on an empty decoder, not on what just failed.
+                // SAFETY: valid transform; flushing takes no parameter.
+                let flushed =
+                    unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) };
+                if let Err(flush) = flushed {
+                    tracing::debug!(decoder = %self.name, error = %flush, "flush failed");
+                }
                 return e;
             }
             return PipelineError::new(

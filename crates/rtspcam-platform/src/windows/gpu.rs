@@ -458,6 +458,37 @@ impl Drop for TimerFrom {
     }
 }
 
+/// A mapped staging texture, unmapped when dropped, so an early return or a panic while it is
+/// read can't leave it mapped. The device is only locked to map and unmap, not while reading.
+struct Mapped<'a> {
+    gpu: &'a Gpu,
+    texture: &'a ID3D11Texture2D,
+    data: D3D11_MAPPED_SUBRESOURCE,
+}
+
+impl<'a> Mapped<'a> {
+    /// # Safety
+    /// `texture` must be a CPU-readable staging texture of `gpu`'s device, not mapped already.
+    unsafe fn read(gpu: &'a Gpu, texture: &'a ID3D11Texture2D) -> windows_core::Result<Self> {
+        let mut data = D3D11_MAPPED_SUBRESOURCE::default();
+        let _lock = gpu.lock();
+        // SAFETY: as the caller promises.
+        unsafe {
+            gpu.context
+                .Map(texture, 0, D3D11_MAP_READ, 0, Some(&mut data))?;
+        }
+        Ok(Self { gpu, texture, data })
+    }
+}
+
+impl Drop for Mapped<'_> {
+    fn drop(&mut self) {
+        let _lock = self.gpu.lock();
+        // SAFETY: mapped in `read`.
+        unsafe { self.gpu.context.Unmap(self.texture, 0) };
+    }
+}
+
 /// The Video Processor set up for one input and output size.
 struct GpuScaler {
     /// Input (visible) size and output size.
@@ -581,14 +612,10 @@ impl CopyBack {
             if let Some(fence) = &self.fence {
                 fence.wait();
             }
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            {
-                let _lock = gpu.lock();
-                gpu.context
-                    .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-            }
             // Copied out without holding the device, so other streams' decoding goes on
             // meanwhile; the staging texture is this decoder's own.
+            let mapped = Mapped::read(&gpu, &staging)?;
+            let mapped = &mapped.data;
             let pitch = mapped.RowPitch as usize;
             let (w, h) = (out.0 as usize, out.1 as usize);
             let data = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * h * 3 / 2);
@@ -607,8 +634,6 @@ impl CopyBack {
                 f.source_size = (vw, vh);
                 f
             });
-            let _lock = gpu.lock();
-            gpu.context.Unmap(&staging, 0);
             Ok(frame)
         }
     }

@@ -13,7 +13,6 @@
 //! dropping compressed frames (which would corrupt the picture until the next key frame).
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +23,7 @@ use tokio::task::JoinHandle;
 
 use crate::decode::{self, Decoder, DecoderChoice, create_decoder_with};
 use crate::error::{ErrorKind, PipelineError};
+use crate::frame::AtomicSize;
 use crate::status::{StreamState, StreamStats};
 use crate::{EncodedFrame, Frame, FrameBus, RtspSource, SourceOptions, VideoCodec};
 
@@ -134,24 +134,8 @@ enum DecodeEvent {
     Fatal(PipelineError),
 }
 
-/// The largest picture consumers need, shared with the decode thread. 0 means no limit,
-/// otherwise width << 32 | height.
-#[derive(Debug, Clone, Default)]
-struct SizeLimit(Arc<AtomicU64>);
-
-impl SizeLimit {
-    fn set(&self, max: Option<(u32, u32)>) {
-        let v = max.map_or(0, |(w, h)| (u64::from(w) << 32) | u64::from(h));
-        self.0.store(v, Ordering::Relaxed);
-    }
-
-    fn get(&self) -> Option<(u32, u32)> {
-        match self.0.load(Ordering::Relaxed) {
-            0 => None,
-            v => Some(((v >> 32) as u32, v as u32)),
-        }
-    }
-}
+/// The largest picture consumers need, shared with the decode thread (`None`: no limit).
+type SizeLimit = Arc<AtomicSize>;
 
 /// A running stream. Dropping it (or [`stop`](Self::stop)) ends the session and the decode
 /// thread.

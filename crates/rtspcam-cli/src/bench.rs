@@ -22,12 +22,13 @@ use rtspcam_engine::{Activity, CameraManager, ManagerOptions};
 use rtspcam_ipc::client::FrameClient;
 use rtspcam_ipc::protocol::Message;
 use rtspcam_ipc::{FrameSource, PixelFormat, VideoFormat};
+use rtspcam_pipeline::decode;
 use rtspcam_pipeline::{StreamState, StreamStats};
 use rtspcam_platform::{CameraError, CameraSpec, VirtualCameraBackend};
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
-use crate::rtsp::{parse_on_off, parse_size, wait_for_probe};
+use crate::rtsp::{parse_on_off, parse_size};
 
 #[derive(Debug, Args)]
 pub(crate) struct BenchArgs {
@@ -113,7 +114,7 @@ pub(crate) fn run(store: &ConfigStore, args: BenchArgs) -> anyhow::Result<ExitCo
         config.streams.push(stream);
     }
 
-    let hardware = wait_for_probe();
+    let hardware = decode::wait_for_hardware_probe(Duration::from_secs(5));
     println!("hardware decoding: {}", hardware.describe());
     println!(
         "hardware decoding is {} for this run",

@@ -45,20 +45,9 @@ impl Common {
     fn apply_hardware(&self) {
         decode::set_use_hardware(self.hardware);
         if self.hardware {
-            println!("hardware:  {}", wait_for_probe().describe());
+            let found = decode::wait_for_hardware_probe(Duration::from_secs(5));
+            println!("hardware:  {}", found.describe());
         }
-    }
-}
-
-/// Waits (up to 5 s) for the hardware probe that `rtspcam_platform::install` started.
-pub(crate) fn wait_for_probe() -> decode::HardwareDecoding {
-    let until = Instant::now() + Duration::from_secs(5);
-    loop {
-        let h = decode::hardware_decoding();
-        if h != decode::HardwareDecoding::Checking || Instant::now() > until {
-            return h;
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
