@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rtspcam_ipc::client::FrameClient;
-use rtspcam_ipc::server::{FrameSource, serve};
+use rtspcam_ipc::server::{FrameSource, serve, serve_until};
 use rtspcam_ipc::{Message, PixelFormat, StreamStatus, VideoFormat};
 use rtspcam_platform::{ReadWrite, frame_transport};
 use uuid::Uuid;
@@ -124,4 +124,44 @@ async fn frames_flow_over_the_platform_transport() {
 #[test]
 fn connecting_to_an_unserved_camera_fails() {
     assert!(frame_transport().connect(Uuid::new_v4()).is_err());
+}
+
+/// Re-creating a camera serves its endpoint again right after stopping the old server. On
+/// Windows the new pipe must be the first instance of its name, which fails ("access is
+/// denied") while an old one is still open, so stopping has to close every one first, even
+/// with a client still holding its end.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_endpoint_can_be_served_again_right_after_stopping() {
+    let transport = frame_transport();
+    let id = Uuid::new_v4();
+    let source = Arc::new(Counter::default());
+    let mut clients = Vec::new();
+    for round in 0..3u32 {
+        let listener = transport
+            .listen(id)
+            .unwrap_or_else(|e| panic!("round {round}: {e}"));
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_until(listener, source.clone(), async {
+            let _ = stopped.await;
+        }));
+
+        // A client reading frames, which keeps its connection open throughout.
+        let client_transport = transport.clone();
+        let client = tokio::task::spawn_blocking(move || {
+            let mut client =
+                FrameClient::new(client_transport.connect(id).unwrap(), NV12_720P).unwrap();
+            read_frames(&mut client, 3);
+            client
+        })
+        .await
+        .unwrap();
+
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+        // The client is told it left, though it still holds its end (dropped only after the
+        // next round's `listen`).
+        assert_eq!(source.disconnected.load(Ordering::SeqCst), round + 1);
+        clients.push(client);
+    }
+    assert_eq!(source.connected.load(Ordering::SeqCst), 3);
 }

@@ -95,6 +95,21 @@ impl VirtualCameraBackend for FakeBackend {
         }
     }
 
+    fn reformat(
+        &self,
+        spec: &CameraSpec,
+        frames: Arc<dyn FrameSource>,
+        _runtime: &Handle,
+    ) -> Result<(), CameraError> {
+        let (w, h, fps) = spec.preferred;
+        self.push(format!("reformat {} {w}x{h}@{fps}", spec.name));
+        self.sources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(spec.id, frames);
+        Ok(())
+    }
+
     fn remove(&self, id: Uuid) {
         self.push(format!("remove {id}"));
         self.sources
@@ -612,7 +627,7 @@ fn a_source_stream_offers_the_cameras_size_once_no_app_uses_it() {
     });
     assert_eq!(
         backend.log(),
-        ["create Cam 1920x1080@30", "create Cam 1440x1080@30"]
+        ["create Cam 1920x1080@30", "reformat Cam 1440x1080@30"]
     );
     assert_eq!(status_of(&m, id).offered, (1440, 1080, 30));
     assert_eq!(status_of(&m, id).vcam, VcamState::Ready);

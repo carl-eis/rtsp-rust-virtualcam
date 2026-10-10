@@ -10,11 +10,13 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use rtspcam_ipc::FrameSource;
-use rtspcam_ipc::server::serve;
+use rtspcam_ipc::server::serve_until;
 use rtspcam_vcam_mgr::{MfThread, VirtualCamera};
 use tokio::runtime::Handle;
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::pipe::NamedPipes;
@@ -43,7 +45,35 @@ pub(crate) struct VcamBackend {
     tx: Mutex<Option<Sender<Command>>>,
     thread: Mutex<Option<JoinHandle<()>>>,
     /// The task serving each camera's pipe.
-    servers: Mutex<HashMap<Uuid, tokio::task::JoinHandle<()>>>,
+    servers: Mutex<HashMap<Uuid, PipeServer>>,
+}
+
+/// How long stopping a pipe server may take before it is abandoned (aborted).
+const SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A task serving one camera's pipe.
+#[derive(Debug)]
+struct PipeServer {
+    task: tokio::task::JoinHandle<()>,
+    /// Asks the task to end its clients and close the pipe.
+    stop: oneshot::Sender<()>,
+    /// Disconnects once the task has ended and every pipe handle is closed.
+    done: mpsc::Receiver<()>,
+}
+
+impl PipeServer {
+    /// Stops the server and waits until its pipe handles are closed, so the pipe can be served
+    /// again at once: [`NamedPipes::listen`] asks for the first instance of the name, which
+    /// Windows refuses ("access is denied") while an old instance is still open.
+    ///
+    /// Waits on a plain channel rather than the runtime, so it works from any thread.
+    fn stop(self, id: Uuid) {
+        let _ = self.stop.send(());
+        if let Err(mpsc::RecvTimeoutError::Timeout) = self.done.recv_timeout(SERVER_STOP_TIMEOUT) {
+            tracing::warn!(%id, "the camera's pipe did not close in time");
+            self.task.abort();
+        }
+    }
 }
 
 impl VcamBackend {
@@ -148,28 +178,58 @@ impl VcamBackend {
                 "could not serve the camera's pipe ({e}); is another copy of RTSP Cam running?"
             ))
         })?;
+        let (stop, stopped) = oneshot::channel();
+        let (done_tx, done) = mpsc::channel::<()>();
         let task = runtime.spawn(async move {
-            if let Err(e) = serve(listener, frames).await {
+            // Dropped (closing the channel) only after `serve_until` closed every pipe handle,
+            // or when the task is aborted.
+            let _done = done_tx;
+            let stop = async {
+                let _ = stopped.await;
+            };
+            if let Err(e) = serve_until(listener, frames, stop).await {
                 tracing::error!(%id, error = %e, "the camera's pipe stopped");
             }
         });
         self.servers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, task);
+            .insert(id, PipeServer { task, stop, done });
         Ok(())
     }
 
+    fn is_serving(&self, id: Uuid) -> bool {
+        self.servers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&id)
+    }
+
+    /// Stops camera `id`'s pipe server (ending every connected client) and waits until the
+    /// pipe is closed.
     fn stop_serving(&self, id: Uuid) {
-        if let Some(task) = self
+        let server = self
             .servers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id)
-        {
-            // Dropping the server task also ends every connected client.
-            task.abort();
+            .remove(&id);
+        if let Some(server) = server {
+            server.stop(id);
         }
+    }
+
+    /// Asks the camera thread to (re-)create camera `spec`.
+    fn create_camera(&self, spec: &CameraSpec) -> Result<(), CameraError> {
+        self.ask(
+            |reply| Command::Create {
+                name: spec.name.clone(),
+                id: spec.id,
+                preferred: spec.preferred,
+                reply,
+            },
+            Err("the virtual camera thread has ended".to_owned()),
+        )
+        .map_err(CameraError::Failed)
     }
 }
 
@@ -192,16 +252,22 @@ impl VirtualCameraBackend for VcamBackend {
     ) -> Result<(), CameraError> {
         // The pipe first: creating the camera is the slow part.
         self.serve(spec.id, frames, runtime)?;
-        self.ask(
-            |reply| Command::Create {
-                name: spec.name.clone(),
-                id: spec.id,
-                preferred: spec.preferred,
-                reply,
-            },
-            Err("the virtual camera thread has ended".to_owned()),
-        )
-        .map_err(CameraError::Failed)
+        self.create_camera(spec)
+    }
+
+    /// The pipe carries whatever format the DLL asks for, so only the camera is re-made; the
+    /// pipe keeps serving `frames`' camera.
+    fn reformat(
+        &self,
+        spec: &CameraSpec,
+        frames: Arc<dyn FrameSource>,
+        runtime: &Handle,
+    ) -> Result<(), CameraError> {
+        if self.is_serving(spec.id) {
+            self.create_camera(spec)
+        } else {
+            self.create(spec, frames, runtime)
+        }
     }
 
     fn remove(&self, id: Uuid) {
@@ -211,13 +277,14 @@ impl VirtualCameraBackend for VcamBackend {
 
     fn remove_all(&self) {
         // Stop the pipes first, so no new consumer arrives while cameras go away.
-        for (_, task) in self
+        let servers: Vec<(Uuid, PipeServer)> = self
             .servers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .drain()
-        {
-            task.abort();
+            .collect();
+        for (id, server) in servers {
+            server.stop(id);
         }
         self.ask(|reply| Command::RemoveAll { reply }, ());
         // Close the channel and wait for the thread, so Media Foundation is shut down.

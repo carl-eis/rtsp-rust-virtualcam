@@ -78,6 +78,34 @@ GitHub issue #13. Everything in the issue is built; §4 lists what still needs a
   (`keep_device`), which sets the new format on the same device, or claims a new one if the
   device can't be re-formatted.
 
+### Fix: "could not serve the camera's pipe (access is denied, os error 5)"
+
+Found by hand on Windows with "Source": the re-create failed with this error, and the camera
+was not re-made. The cause was the pipe, not the camera. `VcamBackend::create` restarted the
+camera's pipe server by aborting the old task and serving the pipe again at once. `abort()`
+only asks tokio to cancel, so the old pipe instances were still open a moment later, and
+`NamedPipes::listen` asks for the *first* instance of the name (`first_pipe_instance`, which
+keeps a second copy of the app from serving the same camera). Windows refuses that with
+`ERROR_ACCESS_DENIED` while any old instance exists. Editing a stream had the same race, but
+the pipeline stop before it gave the abort time to finish.
+
+- `rtspcam_ipc::server::serve_until` stops on a signal: it cancels every client task, waits
+  for them (`JoinSet::shutdown`) and drops the listener before returning.
+  `rtspcam-platform/src/windows/camera.rs` keeps a `PipeServer` per camera and `stop_serving`
+  signals it and waits (up to 2 s, on a plain channel so it works from any thread) until every
+  pipe handle is closed.
+- New `VirtualCameraBackend::reformat` for the "Source" re-create. It defaults to `create`;
+  the Windows backend re-makes only the camera and leaves the pipe running, since the pipe
+  carries whatever format the DLL asks for. Linux keeps the default (the pusher's format
+  changes).
+- Found on the way: a client whose task was cancelled (stopped server, or the old abort) never
+  reported `client_disconnected`, so the camera's client count stayed too high. A drop guard in
+  `serve_client` now reports it however the connection ends.
+- Test: `rtspcam-platform/tests/transport.rs::an_endpoint_can_be_served_again_right_after_stopping`
+  serves, connects a client, stops and serves again three times, with each client still holding
+  its end. A client's open handle does not block the new first instance once the server's
+  handles are closed.
+
 ### Test server
 
 `tools/test-rtsp/mediamtx.yml` has two new on-demand streams: `h264-1080p60` (1920×1080 60 fps)

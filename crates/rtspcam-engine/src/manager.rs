@@ -797,7 +797,7 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
         );
     (shared.options.on_change)();
 
-    let result = create_vcam(shared, &state, preferred).await;
+    let result = create_vcam(shared, &state, preferred, false).await;
     state.vcam_created(result);
 }
 
@@ -814,12 +814,14 @@ fn offered_output(config: &StreamConfig, seen: Option<(u32, u32)>) -> (u32, u32,
     (width, height, o.fps)
 }
 
-/// Creates (or re-creates) `camera`'s virtual camera, offering `preferred` first. Creating the
+/// Creates `camera`'s virtual camera, offering `preferred` first, or with `reformat` re-creates
+/// it with that format ([`VirtualCameraBackend::reformat`]). Creating the
 /// camera is the slow part; the backend gets the camera's frames with it.
 async fn create_vcam(
     shared: &Arc<Shared>,
     camera: &Arc<CameraShared>,
     preferred: (u32, u32, u32),
+    reformat: bool,
 ) -> Result<(), CameraError> {
     let backend = shared.backend.clone();
     let frames = Arc::new(CameraSource::new(camera.clone()));
@@ -830,9 +832,15 @@ async fn create_vcam(
     };
     let id = spec.id;
     let runtime = shared.handle.clone();
-    let result = tokio::task::spawn_blocking(move || backend.create(&spec, frames, &runtime))
-        .await
-        .unwrap_or_else(|e| Err(CameraError::Failed(e.to_string())));
+    let result = tokio::task::spawn_blocking(move || {
+        if reformat {
+            backend.reformat(&spec, frames, &runtime)
+        } else {
+            backend.create(&spec, frames, &runtime)
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(CameraError::Failed(e.to_string())));
     match &result {
         Ok(()) => {}
         Err(CameraError::Unsupported(why)) => tracing::info!(%id, "{why}"),
@@ -935,7 +943,7 @@ async fn resize_camera(
         *offered
     };
     tracing::info!(camera = %camera.name, ?preferred, "re-creating the camera with its picture size");
-    if let Err(e) = create_vcam(shared, &camera, preferred).await {
+    if let Err(e) = create_vcam(shared, &camera, preferred, true).await {
         *camera.vcam.lock().unwrap_or_else(PoisonError::into_inner) = match e {
             CameraError::Unsupported(why) => VcamState::Unsupported(why),
             CameraError::Failed(why) => VcamState::Failed(why),
