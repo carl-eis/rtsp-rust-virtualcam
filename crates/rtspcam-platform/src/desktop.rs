@@ -22,6 +22,12 @@ pub fn process_memory() -> Option<(usize, usize)> {
     os::process_memory()
 }
 
+/// CPU time (user plus kernel, all threads) this process has used since it started. Sample it
+/// twice to get the CPU use in between.
+pub fn process_cpu_time() -> Option<std::time::Duration> {
+    os::process_cpu_time()
+}
+
 /// Resolves when the system asks the process to end, other than Ctrl+C: SIGTERM (logout,
 /// shutdown, `kill`) or SIGHUP on Linux and macOS. Never on Windows. Call it inside a tokio
 /// runtime; the signals are caught from the first poll on, so start waiting early.

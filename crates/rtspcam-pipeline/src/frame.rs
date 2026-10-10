@@ -21,6 +21,10 @@ pub struct Frame {
     pub received: Instant,
     /// When the decoder produced it.
     pub decoded: Instant,
+    /// The size of the picture as the camera sent it (width, height). Differs from the frame's
+    /// size when the decoder shrank it, and isn't swapped by rotation. The colour matrix is
+    /// guessed from its height.
+    pub source_size: (u32, u32),
 }
 
 impl Frame {
@@ -51,6 +55,7 @@ impl Frame {
             pts: Duration::ZERO,
             received: now,
             decoded: now,
+            source_size: (width, height),
         }
     }
 

@@ -1,8 +1,10 @@
 //! CPU scaling of NV12 pictures to a target size, NV12 → BGRA conversion for the preview, and
 //! NV12 → YUYV / I420 for the push camera backends.
 //!
-//! Bilinear filtering with 8-bit fixed-point weights. The GPU path (Video Processor MFT) is a
-//! Phase 8 optimization; this one has no dependencies and works everywhere.
+//! Bilinear filtering with 8-bit fixed-point weights, with no dependencies, on every OS. With
+//! hardware decoding on Windows the decoder already shrinks pictures on the GPU to what
+//! consumers need (`Decoder::limit_size`), so this mostly fits them to the exact output size
+//! (often a plain row copy).
 
 use rtspcam_core::FitMode;
 
@@ -84,6 +86,8 @@ fn even(v: u32) -> u32 {
 #[derive(Debug, Default)]
 pub struct Scaler {
     plan: Option<Plan>,
+    /// One row of vertically blended samples (see `scale_plane`).
+    blend: Vec<u16>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -147,6 +151,7 @@ impl Scaler {
         out.pts = src.pts;
         out.received = src.received;
         out.decoded = src.decoded;
+        out.source_size = src.source_size;
         out
     }
 
@@ -160,7 +165,9 @@ impl Scaler {
         out: &mut Vec<u8>,
     ) {
         assert!(dst_w.is_multiple_of(2) && dst_h.is_multiple_of(2) && dst_w > 0 && dst_h > 0);
-        let plan = self.plan_for(src.width(), src.height(), dst_w, dst_h, mode);
+        self.plan_for(src.width(), src.height(), dst_w, dst_h, mode);
+        let Self { plan, blend } = self;
+        let plan = plan.as_ref().expect("plan was just made");
         let (dw, dh) = (dst_w as usize, dst_h as usize);
         out.resize(Frame::nv12_len(dst_w, dst_h), 0);
         let (out_y, out_uv) = out.split_at_mut(dw * dh);
@@ -172,7 +179,8 @@ impl Scaler {
         }
 
         let sw = src.width() as usize;
-        scale_plane::<1>(src.y(), sw, out_y, dw, &plan.luma, plan.src_rect, r);
+
+        scale_plane::<1>(src.y(), sw, out_y, dw, &plan.luma, plan.src_rect, r, blend);
         let chroma_dst = Rect::new(r.x / 2, r.y / 2, r.w / 2, r.h / 2);
         let chroma_src = Rect::new(
             plan.src_rect.x / 2,
@@ -188,6 +196,7 @@ impl Scaler {
             &plan.chroma,
             chroma_src,
             chroma_dst,
+            blend,
         );
     }
 
@@ -218,7 +227,13 @@ impl Scaler {
 }
 
 /// Scales one plane. `C` is the number of interleaved channels (1 for Y, 2 for UV). Strides
-/// are in bytes; rect coordinates are in samples of this plane.
+/// are in bytes; rect coordinates are in samples of this plane. `blend` is scratch space.
+///
+/// Separable: each output row first blends its two source rows into `blend` (a plain loop
+/// over the row that the compiler vectorizes), then each output sample blends two values of
+/// that row. The result is exactly the same as blending the four neighbours at once (no
+/// rounding until the end), at about half the work.
+#[allow(clippy::too_many_arguments)]
 fn scale_plane<const C: usize>(
     src: &[u8],
     src_stride: usize,
@@ -227,12 +242,13 @@ fn scale_plane<const C: usize>(
     axes: &Axes,
     src_rect: Rect,
     dst_rect: Rect,
+    blend: &mut Vec<u16>,
 ) {
     let (dx, dst_y) = (dst_rect.x as usize * C, dst_rect.y as usize);
     let row_len = dst_rect.w as usize * C;
+    let sx = src_rect.x as usize * C;
 
     if src_rect.w == dst_rect.w && src_rect.h == dst_rect.h {
-        let sx = src_rect.x as usize * C;
         for row in 0..dst_rect.h as usize {
             let s = (src_rect.y as usize + row) * src_stride + sx;
             let d = (dst_y + row) * dst_stride + dx;
@@ -241,18 +257,26 @@ fn scale_plane<const C: usize>(
         return;
     }
 
+    let span = src_rect.w as usize * C;
+    blend.resize(span, 0);
     for (row, ty) in axes.y.iter().enumerate() {
-        let r0 = &src[ty.i0 as usize * src_stride..];
-        let r1 = &src[ty.i1 as usize * src_stride..];
-        let wy = ty.w;
+        let r0 = &src[ty.i0 as usize * src_stride + sx..][..span];
+        let r1 = &src[ty.i1 as usize * src_stride + sx..][..span];
+        // The weights add up to 256, so a blend is at most 255 * 256 and fits in 16 bits.
+        let (w1, w0) = (ty.w as u16, (256 - ty.w) as u16);
+        for ((b, &top), &bottom) in blend.iter_mut().zip(r0).zip(r1) {
+            *b = u16::from(top) * w0 + u16::from(bottom) * w1;
+        }
         let d = (dst_y + row) * dst_stride + dx;
         let out = &mut dst[d..d + row_len];
         for (px, tx) in out.as_chunks_mut::<C>().0.iter_mut().zip(&axes.x) {
-            let (a, b, wx) = (tx.i0 as usize * C, tx.i1 as usize * C, tx.w);
+            // Tap positions are absolute; `blend` starts at the source rect.
+            let a = tx.i0 as usize * C - sx;
+            let b = tx.i1 as usize * C - sx;
+            let wx = tx.w;
             for c in 0..C {
-                let top = u32::from(r0[a + c]) * (256 - wx) + u32::from(r0[b + c]) * wx;
-                let bot = u32::from(r1[a + c]) * (256 - wx) + u32::from(r1[b + c]) * wx;
-                px[c] = ((top * (256 - wy) + bot * wy + (1 << 15)) >> 16) as u8;
+                let v = u32::from(blend[a + c]) * (256 - wx) + u32::from(blend[b + c]) * wx;
+                px[c] = ((v + (1 << 15)) >> 16) as u8;
             }
         }
     }
@@ -275,6 +299,12 @@ impl Matrix {
         } else {
             Self::Bt601
         }
+    }
+
+    /// [`for_height`](Self::for_height) of the picture's source, so a picture the decoder
+    /// shrank keeps its camera's colours.
+    pub fn for_frame(frame: &Frame) -> Self {
+        Self::for_height(frame.source_size.1)
     }
 }
 
@@ -457,6 +487,92 @@ mod tests {
         assert_eq!(row[0], 0);
         assert_eq!(row[7], 250);
         assert!(row.windows(2).all(|p| p[0] <= p[1]), "{row:?}");
+    }
+
+    /// The scaler as first written: all four neighbours blended at once, per sample. Kept as
+    /// the reference the faster code must match exactly.
+    fn reference_scale(src: &Frame, dw: u32, dh: u32, mode: FitMode) -> Vec<u8> {
+        fn plane<const C: usize>(
+            src: &[u8],
+            stride: usize,
+            dst: &mut [u8],
+            dst_stride: usize,
+            xs: &[Tap],
+            ys: &[Tap],
+            d: Rect,
+        ) {
+            for (row, ty) in ys.iter().enumerate() {
+                let r0 = &src[ty.i0 as usize * stride..];
+                let r1 = &src[ty.i1 as usize * stride..];
+                for (col, tx) in xs.iter().enumerate() {
+                    let (a, b, wx, wy) = (tx.i0 as usize * C, tx.i1 as usize * C, tx.w, ty.w);
+                    for c in 0..C {
+                        let top = u32::from(r0[a + c]) * (256 - wx) + u32::from(r0[b + c]) * wx;
+                        let bot = u32::from(r1[a + c]) * (256 - wx) + u32::from(r1[b + c]) * wx;
+                        dst[(d.y as usize + row) * dst_stride + (d.x as usize + col) * C + c] =
+                            ((top * (256 - wy) + bot * wy + (1 << 15)) >> 16) as u8;
+                    }
+                }
+            }
+        }
+        let (s, d) = fit(src.width(), src.height(), dw, dh, mode);
+        let mut out = vec![0u8; Frame::nv12_len(dw, dh)];
+        let (y, uv) = out.split_at_mut((dw * dh) as usize);
+        y.fill(BLACK_Y);
+        uv.fill(NEUTRAL_UV);
+        let sw = src.width() as usize;
+        plane::<1>(
+            src.y(),
+            sw,
+            y,
+            dw as usize,
+            &taps(s.x, s.w, d.w),
+            &taps(s.y, s.h, d.h),
+            d,
+        );
+        plane::<2>(
+            src.uv(),
+            sw,
+            uv,
+            dw as usize,
+            &taps(s.x / 2, s.w / 2, d.w / 2),
+            &taps(s.y / 2, s.h / 2, d.h / 2),
+            Rect::new(d.x / 2, d.y / 2, d.w / 2, d.h / 2),
+        );
+        out
+    }
+
+    #[test]
+    fn matches_the_reference_scaler_exactly() {
+        let mut seed = 0x1234_5678_u32;
+        let mut noise = |len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect()
+        };
+        let mut scaler = Scaler::new();
+        for (sw, sh, dw, dh) in [
+            (1920, 1080, 1280, 720),
+            (640, 480, 1280, 720),
+            (1280, 720, 1920, 1080),
+            (2592, 1944, 640, 360),
+            (100, 60, 64, 48),
+        ] {
+            let src = Frame::from_nv12(sw, sh, noise(Frame::nv12_len(sw, sh)));
+            for mode in [FitMode::Letterbox, FitMode::Crop, FitMode::Stretch] {
+                let mut out = Vec::new();
+                scaler.scale_into(&src, dw, dh, mode, &mut out);
+                assert!(
+                    out == reference_scale(&src, dw, dh, mode),
+                    "{sw}x{sh} -> {dw}x{dh} {mode:?}"
+                );
+            }
+        }
     }
 
     #[test]

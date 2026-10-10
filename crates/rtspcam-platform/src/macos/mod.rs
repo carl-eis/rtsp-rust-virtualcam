@@ -15,8 +15,8 @@ use crate::camera::UnsupportedCameras;
 use crate::login_items::LaunchAgent;
 use crate::unix::instance::LockFile;
 use crate::unix::secrets::{KeyFile, Keyring, SealedStore};
-pub(crate) use crate::unix::termination_requested;
 use crate::unix::transport::UnixSockets;
+pub(crate) use crate::unix::{process_cpu_time, termination_requested};
 use crate::{Autostart, FrameTransport, SecretStore, SingleInstance, VirtualCameraBackend};
 
 /// The LaunchAgent's label: a reverse-DNS name from the project's home.

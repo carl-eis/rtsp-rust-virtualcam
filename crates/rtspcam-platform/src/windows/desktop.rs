@@ -3,9 +3,10 @@
 use std::io;
 use std::path::Path;
 
+use windows::Win32::Foundation::FILETIME;
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 
 pub(crate) fn open_folder(folder: &Path) -> io::Result<()> {
     std::process::Command::new("explorer.exe")
@@ -35,6 +36,27 @@ pub(crate) fn process_memory() -> Option<(usize, usize)> {
     };
     ok.is_ok()
         .then_some((counters.WorkingSetSize, counters.PrivateUsage))
+}
+
+/// User plus kernel CPU time this process has used.
+pub(crate) fn process_cpu_time() -> Option<std::time::Duration> {
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    // SAFETY: the pseudo handle is always valid; the four FILETIMEs are plain out-parameters.
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .ok()?;
+    let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+    // FILETIME counts 100 ns units.
+    Some(std::time::Duration::from_nanos(
+        (ticks(kernel) + ticks(user)) * 100,
+    ))
 }
 
 /// Never resolves: a windowed program hears about logoff and shutdown through its window, and

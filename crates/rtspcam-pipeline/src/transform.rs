@@ -55,6 +55,7 @@ pub fn adjust(src: &Frame, picture: &Picture) -> Option<Frame> {
     out.pts = src.pts;
     out.received = src.received;
     out.decoded = src.decoded;
+    out.source_size = src.source_size;
     Some(out)
 }
 

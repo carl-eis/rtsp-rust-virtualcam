@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use rtspcam_core::config::{OnDisconnect, Picture, StreamConfig};
+use rtspcam_core::config::{OnDisconnect, Picture, Rotation, StreamConfig};
+use rtspcam_core::profile::{self, Stage};
 use rtspcam_core::{Config, FitMode};
 use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
@@ -50,6 +51,9 @@ pub struct ManagerOptions {
     pub idle_grace: Duration,
     /// Called (from any thread) whenever something the UI shows may have changed.
     pub on_change: Notify,
+    /// Tell each pipeline the largest picture its consumers and preview ask for, so a
+    /// decoder that can shrink pictures cheaply (on the GPU) does it right away.
+    pub limit_decoded_size: bool,
 }
 
 impl Default for ManagerOptions {
@@ -57,6 +61,7 @@ impl Default for ManagerOptions {
         Self {
             idle_grace: Duration::from_secs(10),
             on_change: Arc::new(|| {}),
+            limit_decoded_size: true,
         }
     }
 }
@@ -65,6 +70,7 @@ impl std::fmt::Debug for ManagerOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManagerOptions")
             .field("idle_grace", &self.idle_grace)
+            .field("limit_decoded_size", &self.limit_decoded_size)
             .finish_non_exhaustive()
     }
 }
@@ -74,6 +80,58 @@ impl std::fmt::Debug for ManagerOptions {
 struct Demand {
     clients: usize,
     previews: usize,
+}
+
+/// A size asked for is forgotten when nobody asked for it this long (its consumer left).
+const REQUEST_TTL: Duration = Duration::from_secs(3);
+
+/// The picture sizes consumers and the preview asked for recently, and the decoder size limit
+/// worked out from them.
+#[derive(Debug, Default)]
+struct Requests {
+    /// Size and how the picture is fitted into it.
+    seen: HashMap<(u32, u32, FitMode), std::time::Instant>,
+    limit: Option<(u32, u32)>,
+    /// The camera's picture size, once a picture arrived (`Frame::source_size`).
+    source: Option<(u32, u32)>,
+}
+
+/// The decoded picture size needed to show `width` x `height` fitted with `fit`, after the
+/// picture options, as a box for [`Decoder::limit_size`](rtspcam_pipeline::decode::Decoder::limit_size):
+/// rotation swaps the sides, and cropping shows only part of the picture, so the whole picture
+/// must be larger by the part cut away. A letterboxed picture needs only the scale that fits
+/// it inside, which depends on the camera's picture shape (`source`, once known).
+fn source_size_for(
+    width: u32,
+    height: u32,
+    fit: FitMode,
+    picture: &Picture,
+    source: Option<(u32, u32)>,
+) -> (u32, u32) {
+    let (w, h) = match picture.rotate {
+        Rotation::Cw90 | Rotation::Cw270 => (height, width),
+        Rotation::None | Rotation::Cw180 => (width, height),
+    };
+    let c = picture.crop;
+    let keep = |a: u8, b: u8| 100u32.saturating_sub(u32::from(a) + u32::from(b)).max(1);
+    let (keep_w, keep_h) = (keep(c.left, c.right), keep(c.top, c.bottom));
+    match (fit, source) {
+        (FitMode::Letterbox, Some((sw, sh))) if sw > 0 && sh > 0 => {
+            // The part shown (sw * keep_w / 100 by sh * keep_h / 100) is scaled to fit inside
+            // w x h; the whole picture at that scale is the box. Integer maths, so exact
+            // ratios stay exact.
+            let (w, h, sw, sh) = (u64::from(w), u64::from(h), u64::from(sw), u64::from(sh));
+            let (kw, kh) = (u64::from(keep_w), u64::from(keep_h));
+            let (bw, bh) = if w * sh * kh <= h * sw * kw {
+                // Width decides: scale = w * 100 / (sw * kw).
+                ((w * 100).div_ceil(kw), (sh * w * 100).div_ceil(sw * kw))
+            } else {
+                ((sw * h * 100).div_ceil(sh * kh), (h * 100).div_ceil(kh))
+            };
+            (bw as u32, bh as u32)
+        }
+        _ => ((w * 100).div_ceil(keep_w), (h * 100).div_ceil(keep_h)),
+    }
 }
 
 /// Remembers the adjusted picture so every reader gets the same one without redoing the work.
@@ -103,6 +161,7 @@ impl Adjusted {
         {
             return result.clone();
         }
+        let _t = profile::time(Stage::Adjust);
         let mut frame = match transform::adjust(&raw, picture) {
             Some(f) => f,
             None => (*raw).clone(),
@@ -137,6 +196,8 @@ pub(crate) struct CameraShared {
     demand: watch::Sender<Demand>,
     vcam: Mutex<VcamState>,
     pipeline: Mutex<Option<Pipeline>>,
+    /// Sizes asked for, for the decoder's size limit (`None`: don't limit).
+    requests: Option<Mutex<Requests>>,
     notify: Notify,
 }
 
@@ -153,8 +214,55 @@ impl CameraShared {
             demand: watch::Sender::new(Demand::default()),
             vcam: Mutex::new(VcamState::Pending),
             pipeline: Mutex::new(None),
+            requests: Some(Mutex::default()),
             notify,
         }
+    }
+
+    /// Never limits the decoded size.
+    fn without_size_limit(mut self) -> Self {
+        self.requests = None;
+        self
+    }
+
+    /// Someone (a consumer, the preview) asked for a `width` x `height` picture. Keeps the
+    /// pipeline's size limit at the largest size anyone asked for in the last few seconds.
+    pub(crate) fn note_request(&self, width: u32, height: u32, fit: FitMode) {
+        let Some(requests) = &self.requests else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        // A handful of entries at most (one per distinct size), so recomputing is cheap.
+        let mut r = requests.lock().unwrap_or_else(PoisonError::into_inner);
+        r.seen.insert((width, height, fit), now);
+        r.seen.retain(|_, t| now.duration_since(*t) < REQUEST_TTL);
+        let source = r.source;
+        let limit = r
+            .seen
+            .keys()
+            .map(|&(w, h, fit)| source_size_for(w, h, fit, &self.picture, source))
+            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)));
+        if limit != r.limit {
+            tracing::debug!(camera = %self.name, ?limit, "decoded size limit");
+            r.limit = limit;
+            if let Some(p) = self
+                .pipeline
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+            {
+                p.set_size_limit(limit);
+            }
+        }
+    }
+
+    /// The current decoded size limit.
+    fn size_limit(&self) -> Option<(u32, u32)> {
+        self.requests
+            .as_ref()?
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .limit
     }
 
     /// The newest picture with the stream's picture settings applied (crop, rotate, flip, text).
@@ -175,6 +283,12 @@ impl CameraShared {
                 .then(|| adjusted.shown.clone())
                 .flatten();
         };
+        if let Some(requests) = &self.requests {
+            requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .source = Some(raw.source_size);
+        }
         let shown = adjusted.adjust(raw, &self.name, &self.picture);
         if self.picture.on_disconnect == OnDisconnect::FreezeLastFrame {
             adjusted.shown = Some(shown.clone());
@@ -282,6 +396,15 @@ impl Preview {
         self.camera.latest_frame()
     }
 
+    /// [`latest`](Self::latest), for showing it within `width` x `height` pixels. The size
+    /// counts toward how large the decoder's pictures need to be.
+    pub fn latest_for(&self, width: u32, height: u32) -> Option<Arc<Frame>> {
+        if width >= 2 && height >= 2 {
+            self.camera.note_request(width, height, FitMode::Letterbox);
+        }
+        self.camera.latest_frame()
+    }
+
     pub fn activity(&self) -> Activity {
         self.camera.activity()
     }
@@ -355,7 +478,11 @@ impl CameraManager {
 
     /// Makes the cameras match `config`. Returns immediately; the work happens in the
     /// background, and [`ManagerOptions::on_change`] fires as cameras come and go.
+    ///
+    /// The "Use hardware decoding" setting takes effect here too: before any stream of this
+    /// config starts, and for running streams at their next key frame (without reconnecting).
     pub fn apply(&self, config: &Config) {
+        rtspcam_pipeline::decode::set_use_hardware(config.settings.hardware_decoding);
         self.config_tx.send_replace(Arc::new(config.clone()));
     }
 
@@ -531,7 +658,11 @@ async fn remove_camera(shared: &Arc<Shared>, camera: Camera, remove_vcam: bool) 
 
 async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
     tracing::info!(id = %config.id, name = %config.name, url = %config.url(), "adding camera");
-    let state = Arc::new(CameraShared::new(config, shared.options.on_change.clone()));
+    let mut state = CameraShared::new(config, shared.options.on_change.clone());
+    if !shared.options.limit_decoded_size {
+        state = state.without_size_limit();
+    }
+    let state = Arc::new(state);
 
     let supervisor = shared.handle.spawn(supervise(
         state.clone(),
@@ -612,6 +743,7 @@ async fn supervise(
                     &handle,
                 );
                 camera.set_bus(Some(pipeline.frames().clone()));
+                pipeline.set_size_limit(camera.size_limit());
                 let rx = pipeline.status();
                 camera.set_activity(Activity::Running(rx.borrow().clone()));
                 *camera
@@ -666,7 +798,6 @@ async fn supervise(
 
 #[cfg(test)]
 mod tests {
-    use rtspcam_core::config::Rotation;
 
     use super::*;
 
@@ -746,5 +877,69 @@ mod tests {
         // Switched off on purpose: apps should be told, not shown a stale picture.
         cam.set_activity(Activity::Paused);
         assert!(!cam.holds_last_frame());
+    }
+
+    #[test]
+    fn requested_sizes_map_back_through_rotation_and_crop() {
+        let crop = FitMode::Crop;
+        let plain = Picture::default();
+        assert_eq!(source_size_for(1280, 720, crop, &plain, None), (1280, 720));
+        let rotated = Picture {
+            rotate: Rotation::Cw90,
+            ..Picture::default()
+        };
+        assert_eq!(
+            source_size_for(720, 1280, crop, &rotated, None),
+            (1280, 720)
+        );
+        let cropped = Picture {
+            crop: rtspcam_core::config::Crop {
+                left: 25,
+                right: 25,
+                top: 10,
+                bottom: 0,
+            },
+            ..Picture::default()
+        };
+        // Half the width is shown, so the whole picture must be twice as wide.
+        assert_eq!(source_size_for(640, 360, crop, &cropped, None), (1280, 400));
+    }
+
+    #[test]
+    fn letterboxed_pictures_need_only_the_scale_that_fits() {
+        let rotated = Picture {
+            rotate: Rotation::Cw90,
+            ..Picture::default()
+        };
+        let source = Some((1920, 1080));
+        // A 1080p camera turned upright, shown in 1280x720: 405 rows of picture are enough.
+        assert_eq!(
+            source_size_for(1280, 720, FitMode::Letterbox, &rotated, source),
+            (720, 405)
+        );
+        // Not knowing the camera's shape yet, ask for enough to be safe.
+        assert_eq!(
+            source_size_for(1280, 720, FitMode::Letterbox, &rotated, None),
+            (720, 1280)
+        );
+        // Same shape: the output size itself.
+        assert_eq!(
+            source_size_for(1280, 720, FitMode::Letterbox, &Picture::default(), source),
+            (1280, 720)
+        );
+    }
+
+    #[test]
+    fn the_size_limit_is_the_largest_recent_request() {
+        let cam = camera(Picture::default());
+        assert_eq!(cam.size_limit(), None);
+        cam.note_request(640, 360, FitMode::Crop);
+        cam.note_request(1280, 720, FitMode::Crop);
+        cam.note_request(1920, 400, FitMode::Crop);
+        assert_eq!(cam.size_limit(), Some((1920, 720)));
+        // Without size limits nothing is recorded.
+        let cam = camera(Picture::default()).without_size_limit();
+        cam.note_request(640, 360, FitMode::Crop);
+        assert_eq!(cam.size_limit(), None);
     }
 }

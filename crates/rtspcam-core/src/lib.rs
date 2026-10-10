@@ -6,6 +6,7 @@
 //!   that encrypts them.
 //! - [`constants`]: names and identifiers shared by the app and the virtual camera DLL.
 //! - [`logging`] (feature `logging`): rolling-file `tracing` setup and a panic hook.
+//! - [`profile`]: time per stage of the frame path, for measuring where the CPU goes.
 //!
 //! This crate has no OS-specific code; what differs per OS (encrypting secrets, replacing
 //! files) is a trait here with implementations in `rtspcam-platform`.
@@ -20,6 +21,7 @@ pub mod error;
 #[cfg(feature = "logging")]
 pub mod logging;
 pub mod paths;
+pub mod profile;
 pub mod secret;
 
 pub use config::{

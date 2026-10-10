@@ -4733,6 +4733,7 @@ dependencies = [
  "anyhow",
  "clap",
  "rtspcam-core",
+ "rtspcam-engine",
  "rtspcam-ipc",
  "rtspcam-onvif",
  "rtspcam-pipeline",

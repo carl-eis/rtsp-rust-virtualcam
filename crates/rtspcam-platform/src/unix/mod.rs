@@ -31,6 +31,20 @@ pub(crate) fn runtime_dir() -> PathBuf {
     }
 }
 
+/// User plus system CPU time this process has used, from `getrusage`.
+pub(crate) fn process_cpu_time() -> Option<std::time::Duration> {
+    // SAFETY: getrusage only writes into the zeroed struct we pass.
+    let usage = unsafe {
+        let mut usage: libc::rusage = std::mem::zeroed();
+        (libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) == 0).then_some(usage)
+    }?;
+    let time = |t: libc::timeval| {
+        std::time::Duration::from_secs(t.tv_sec.max(0) as u64)
+            + std::time::Duration::from_micros(t.tv_usec.max(0) as u64)
+    };
+    Some(time(usage.ru_utime) + time(usage.ru_stime))
+}
+
 /// Creates `dir` (and its parents) and makes it private to the user.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)?;

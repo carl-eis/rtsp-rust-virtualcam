@@ -1,12 +1,14 @@
-//! The Settings dialog: minimize to tray, start at login, log level, theme.
+//! The Settings dialog: minimize to tray, start at login, log level, theme, hardware decoding.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use rtspcam_core::{LogLevel, Theme};
-use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
+use rtspcam_pipeline::decode::{self, HardwareDecoding};
+use slint::{ComponentHandle as _, ModelRc, SharedString, Timer, VecModel};
 
 use super::app::App;
-use super::generated::SettingsDialog;
+use super::generated::{MainWindow, SettingsDialog};
 use super::message;
 
 const LEVELS: [(&str, LogLevel); 5] = [
@@ -55,7 +57,42 @@ pub(crate) fn open(app: &Rc<App>) {
             .position(|(_, t)| *t == current.theme)
             .unwrap_or(0) as i32,
     );
+    d.set_hardware_decoding(current.hardware_decoding);
+    show_hardware(&ui.as_weak());
     d.set_open(true);
+}
+
+/// Fills in the hardware decoding line, and checks again shortly while the graphics card is
+/// still being looked at.
+fn show_hardware(ui: &slint::Weak<MainWindow>) {
+    let Some(ui) = ui.upgrade() else { return };
+    let d = ui.global::<SettingsDialog>();
+    let found = decode::hardware_decoding();
+    let available = found.is_available();
+    d.set_hardware_available(available);
+    d.set_hardware_text(
+        match &found {
+            HardwareDecoding::Available { .. } => format!("Device: {}", found.describe()),
+            _ => found.describe(),
+        }
+        .into(),
+    );
+    match found {
+        HardwareDecoding::Checking => {
+            let weak = ui.as_weak();
+            Timer::single_shot(Duration::from_millis(250), move || {
+                let open = weak
+                    .upgrade()
+                    .is_some_and(|ui| ui.global::<SettingsDialog>().get_open());
+                if open {
+                    show_hardware(&weak);
+                }
+            });
+        }
+        // Shown unchecked, but the stored value is kept (see `apply`).
+        HardwareDecoding::Unavailable(_) => d.set_hardware_decoding(false),
+        HardwareDecoding::Available { .. } => {}
+    }
 }
 
 fn apply(app: &Rc<App>) {
@@ -75,6 +112,11 @@ fn apply(app: &Rc<App>) {
         .ok()
         .and_then(|i| THEMES.get(i))
         .map_or(current.theme, |(_, t)| *t);
+    // Without a usable graphics card the box can't be changed, so the stored value stays (a
+    // config moved to a computer with one uses it there).
+    if d.get_hardware_available() {
+        settings.hardware_decoding = d.get_hardware_decoding();
+    }
 
     let autostart_failed = (settings.start_with_windows != current.start_with_windows)
         .then(|| app.autostart.set(settings.start_with_windows).err())

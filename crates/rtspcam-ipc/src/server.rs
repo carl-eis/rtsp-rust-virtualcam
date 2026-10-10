@@ -10,13 +10,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rtspcam_core::profile::{self, Stage};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::protocol::{
-    FrameHeader, HEADER_LEN, Message, ProtocolError, VideoFormat, encode, frame_prefix, parse_body,
-    parse_header,
+    FrameHeader, HEADER_LEN, Message, ProtocolError, StreamStatus, VideoFormat, encode,
+    frame_prefix, parse_body, parse_header,
 };
 pub use crate::source::FrameSource;
 
@@ -41,6 +42,8 @@ pub trait FrameListener: Send + 'static {
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Status is re-sent this often even if unchanged, as a heartbeat.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
+/// How often a frame slot checks again for a picture that is late.
+const LATE_POLL: Duration = Duration::from_millis(3);
 
 /// Serves `source` to every client `listener` accepts, until the task is dropped (which also
 /// ends every connected client) or accepting fails.
@@ -129,6 +132,7 @@ async fn write_frames(
         }
         let now = tokio::time::Instant::now();
         let status = source.status();
+        let streaming = status.0 == StreamStatus::Streaming;
         if last_status.as_ref() != Some(&status) || now >= status_due {
             let msg = Message::Status {
                 status: status.0,
@@ -138,7 +142,16 @@ async fn write_frames(
             last_status = Some(status);
             status_due = now + STATUS_INTERVAL;
         }
-        if let Some(seq) = source.next_frame(format, last_seq, &mut data) {
+        // Pictures don't arrive exactly once per slot (hardware decoding adds jitter). One
+        // that is a little late still goes out in this slot instead of waiting a whole slot,
+        // by when the next one has replaced it.
+        let late_until = now + frame_interval(format) / 2;
+        let mut next = source.next_frame(format, last_seq, &mut data);
+        while next.is_none() && streaming && tokio::time::Instant::now() < late_until {
+            tokio::time::sleep(LATE_POLL).await;
+            next = source.next_frame(format, last_seq, &mut data);
+        }
+        if let Some(seq) = next {
             if data.len() != format.frame_len() {
                 tracing::error!(len = data.len(), %format, "frame source returned a wrong-sized frame");
                 continue;
@@ -148,8 +161,11 @@ async fn write_frames(
                 timestamp: 0,
                 format,
             };
+            // Includes waiting for the client to read (the pipe's buffer is small).
+            let started = std::time::Instant::now();
             wr.write_all(&frame_prefix(&header, data.len())).await?;
             wr.write_all(&data).await?;
+            profile::record(Stage::Deliver, started.elapsed());
             last_seq = Some(seq);
         }
     }

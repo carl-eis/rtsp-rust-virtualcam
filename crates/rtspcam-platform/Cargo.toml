@@ -23,6 +23,10 @@ zeroize.workspace = true
 rtspcam-vcam-mgr.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
     "Win32_Security",
     "Win32_Security_Authorization",
@@ -51,11 +55,11 @@ workspace = true
 [target.'cfg(unix)'.dependencies]
 chacha20poly1305 = "0.10"
 keyring-core = "1"
+libc = "0.2.155"
 rand.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.155"
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

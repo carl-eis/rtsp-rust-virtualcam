@@ -10,6 +10,7 @@ publish.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rtspcam-core = { workspace = true, default-features = true }
+rtspcam-engine.workspace = true
 rtspcam-onvif.workspace = true
 rtspcam-ipc = { workspace = true, features = ["server"] }
 rtspcam-pipeline = { workspace = true, default-features = true }

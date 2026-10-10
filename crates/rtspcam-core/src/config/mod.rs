@@ -81,6 +81,9 @@ pub struct AppSettings {
     pub log_level: LogLevel,
     /// Light or dark window, or whatever the OS uses.
     pub theme: Theme,
+    /// Decode on the graphics card when this computer has one that can. Kept as set when
+    /// there is none, so a config moved to a computer with one uses it there.
+    pub hardware_decoding: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -92,6 +95,7 @@ impl Default for AppSettings {
             minimize_to_tray: false,
             log_level: LogLevel::Info,
             theme: Theme::System,
+            hardware_decoding: true,
             extra: Map::new(),
         }
     }
@@ -382,6 +386,7 @@ mod tests {
         assert_eq!(config.settings, AppSettings::default());
         assert!(!config.settings.minimize_to_tray);
         assert!(!config.settings.start_with_windows);
+        assert!(config.settings.hardware_decoding, "on unless turned off");
 
         let s = &config.streams[0];
         assert_eq!(s.protocol, Protocol::Rtsp);

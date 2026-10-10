@@ -63,6 +63,8 @@ pub struct StreamStats {
     pub bitrate: u64,
     /// Average time from a frame's last packet arriving to its picture being decoded.
     pub latency: Duration,
+    /// Average time the decoder took per picture (including a copy from the GPU).
+    pub decode_time: Duration,
     /// Totals for this session.
     pub frames_decoded: u64,
     pub decode_errors: u64,

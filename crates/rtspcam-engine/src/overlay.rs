@@ -172,7 +172,8 @@ impl Overlay {
         }
         let (box_x, box_y) = (pad & !1, (h - box_h - pad) & !1);
 
-        let (pts, received, decoded) = (frame.pts, frame.received, frame.decoded);
+        let (pts, received, decoded, source_size) =
+            (frame.pts, frame.received, frame.decoded, frame.source_size);
         let mut data = frame.into_data();
         dim(&mut data[..w * h], w, box_x, box_y, box_w, box_h);
         let mut y = box_y + pad;
@@ -184,6 +185,7 @@ impl Overlay {
         out.pts = pts;
         out.received = received;
         out.decoded = decoded;
+        out.source_size = source_size;
         out
     }
 }
