@@ -4709,7 +4709,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-app"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "rfd",
@@ -4728,7 +4728,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-cli"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4750,7 +4750,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-core"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -4771,7 +4771,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-engine"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "ab_glyph",
  "chrono",
@@ -4787,7 +4787,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-ipc"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "rtspcam-core",
  "thiserror 2.0.21",
@@ -4798,7 +4798,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-onvif"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "if-addrs",
@@ -4816,7 +4816,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-pipeline"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "bytes",
  "futures",
@@ -4833,7 +4833,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-platform"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -4860,7 +4860,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-vcam"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "rtspcam-core",
  "rtspcam-ipc",
@@ -4874,7 +4874,7 @@ dependencies = [
 
 [[package]]
 name = "rtspcam-vcam-mgr"
-version = "1.4.1"
+version = "1.5.0"
 dependencies = [
  "rtspcam-core",
  "thiserror 2.0.21",
