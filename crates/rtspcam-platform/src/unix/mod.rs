@@ -55,3 +55,17 @@ pub(crate) fn check_socket_path(path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Waits for SIGTERM (logout, shutdown, `kill`, `systemctl stop`) or SIGHUP (the terminal it
+/// was started from closed).
+pub(crate) async fn termination_requested() -> io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    tokio::select! {
+        _ = terminate.recv() => tracing::info!("received SIGTERM"),
+        _ = hangup.recv() => tracing::info!("received SIGHUP"),
+    }
+    Ok(())
+}

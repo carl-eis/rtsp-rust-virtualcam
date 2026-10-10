@@ -15,7 +15,9 @@ mod pipe;
 
 use std::sync::Arc;
 
-pub(crate) use desktop::{attach_parent_console, open_folder, process_memory};
+pub(crate) use desktop::{
+    attach_parent_console, open_folder, process_memory, termination_requested,
+};
 
 use crate::{
     Autostart, FileReplace, FrameTransport, SecretStore, SingleInstance, VirtualCameraBackend,

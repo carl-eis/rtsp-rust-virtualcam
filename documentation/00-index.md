@@ -17,7 +17,8 @@ Section numbers (§) refer to the headings inside each document.
   Phase G (shared frame pusher, placeholder in `rtspcam-ipc`, YUYV/I420) is done
   ([12](12-progress-phase-g.md), 2026-10-10). Phase L is done too ([13](13-progress-phase-l.md),
   2026-10-10): Linux has v4l2loopback cameras and `.deb`/`.rpm` packages, checked against the
-  real module with ffmpeg but not yet in browsers or call apps. Phase M is not started, so macOS
+  real module with ffmpeg but not yet in browsers or call apps. Since then SIGTERM quits cleanly
+  and an edited stream keeps its device ([13 §8](13-progress-phase-l.md#8-fixes-after-phase-l-2026-10-10-featlinux-sigterm-and-device-removal)). Phase M is not started, so macOS
   still uses `UnsupportedCameras`.
 
 ## 2. The documents

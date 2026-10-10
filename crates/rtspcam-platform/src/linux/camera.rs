@@ -11,7 +11,8 @@
 //!
 //! In both cases a device whose label is the stream's name and that no other program writes
 //! to is used again, so a device left behind (an app still had it open when its camera was
-//! removed, or a crash) isn't duplicated.
+//! removed, or a crash) isn't duplicated. A camera re-created for an edited stream keeps its
+//! device, so an app reading it keeps getting pictures.
 //!
 //! Frames are YUYV, the format every webcam offers and every Linux camera app reads. With
 //! 0.13 and later the device reports when an app starts and stops streaming, so on-demand
@@ -63,6 +64,17 @@ struct Camera {
     nr: u32,
     /// The device can be removed through the control device when the camera goes.
     removable: bool,
+    /// The device's label, as apps show it.
+    label: String,
+}
+
+/// A device taken for a camera.
+#[derive(Debug)]
+struct Claimed {
+    device: Device,
+    nr: u32,
+    removable: bool,
+    label: String,
 }
 
 /// What the module offers, for [`V4l2Loopback::check`] and the error texts.
@@ -144,14 +156,23 @@ impl VirtualCameraBackend for V4l2Loopback {
             pixel_format: PixelFormat::Yuyv,
         };
         let mut state = self.lock();
-        // Re-creating replaces the old one (its device may be used again below).
-        if let Some(old) = state.cameras.remove(&spec.id) {
-            retire(&mut state, old);
-        }
+        let previous = state.cameras.remove(&spec.id);
         retry_lingering(&mut state);
 
-        let taken: Vec<u32> = state.cameras.values().map(|c| c.nr).collect();
-        let (mut device, nr, removable) = claim(&spec.name, &format, &taken)?;
+        // Re-creating (the stream was edited) keeps the camera on its device where it can.
+        let kept = previous.and_then(|old| keep_device(&mut state, old, &spec.name, &format));
+        let Claimed {
+            mut device,
+            nr,
+            removable,
+            label,
+        } = match kept {
+            Some(claimed) => claimed,
+            None => {
+                let taken: Vec<u32> = state.cameras.values().map(|c| c.nr).collect();
+                claim(&spec.name, &format, &taken)?
+            }
+        };
         if let Some(i) = state.lingering.iter().position(|&n| n == nr) {
             state.lingering.remove(i);
         }
@@ -199,6 +220,7 @@ impl VirtualCameraBackend for V4l2Loopback {
                 pusher,
                 nr,
                 removable,
+                label,
             },
         );
         Ok(())
@@ -244,6 +266,62 @@ fn retire(state: &mut State, camera: Camera) {
     camera.pusher.stop();
     if camera.removable {
         remove_device(state, camera.nr);
+    }
+}
+
+/// For a camera being re-created (its stream was edited): stops its frames and takes its
+/// device again, so an app reading it (a call) keeps getting pictures. Removing it instead
+/// fails while an app has it open, and on 0.12 the camera could come back on another of the
+/// fixed devices, leaving the app reading one nobody writes to.
+///
+/// A renamed camera gets a new device with the new name, unless an app has the old one open.
+/// `None`: find a device as for a new camera.
+fn keep_device(
+    state: &mut State,
+    old: Camera,
+    name: &str,
+    format: &VideoFormat,
+) -> Option<Claimed> {
+    old.pusher.stop();
+    let nr = old.nr;
+    if old.removable && old.label != v4l2::card_label(name) {
+        match Control::open().and_then(|c| c.remove(nr)) {
+            Ok(()) => {
+                tracing::debug!(
+                    nr,
+                    "renamed; removed the device to add one with the new name"
+                );
+                return None;
+            }
+            Err(e) => tracing::info!(
+                nr,
+                "keeping /dev/video{nr} under its old name {:?}; it can't be replaced while an \
+                 app has it open ({e})",
+                old.label
+            ),
+        }
+    }
+    match try_claim(nr, format) {
+        Ok(Some(device)) => {
+            tracing::debug!(nr, "keeping the camera's device");
+            Some(Claimed {
+                device,
+                nr,
+                removable: old.removable,
+                label: old.label,
+            })
+        }
+        result => {
+            if let Err(e) = result {
+                tracing::debug!(nr, "could not keep /dev/video{nr}: {e}");
+            } else {
+                tracing::debug!(nr, "another program took /dev/video{nr}");
+            }
+            if old.removable {
+                remove_device(state, nr);
+            }
+            None
+        }
     }
 }
 
@@ -318,13 +396,8 @@ fn try_claim(nr: u32, format: &VideoFormat) -> io::Result<Option<Device>> {
 
 /// Finds or makes the device for camera `name`: one already labelled `name`, else a new one
 /// through the control device, else a free boot-time device. Skips the numbers in `taken`
-/// (this process's other cameras). Returns the device, its number and whether to remove it
-/// when the camera goes.
-fn claim(
-    name: &str,
-    format: &VideoFormat,
-    taken: &[u32],
-) -> Result<(Device, u32, bool), CameraError> {
+/// (this process's other cameras).
+fn claim(name: &str, format: &VideoFormat, taken: &[u32]) -> Result<Claimed, CameraError> {
     let control = Control::open();
     let devices = loopback_devices();
     let label = v4l2::card_label(name);
@@ -336,7 +409,12 @@ fn claim(
         match try_claim(nr, format) {
             Ok(Some(device)) => {
                 tracing::debug!(nr, "using the existing device labelled {label:?}");
-                return Ok((device, nr, control.is_ok()));
+                return Ok(Claimed {
+                    device,
+                    nr,
+                    removable: control.is_ok(),
+                    label: label.clone(),
+                });
             }
             Ok(None) => {}
             Err(e) => tracing::debug!(nr, "could not use /dev/video{nr}: {e}"),
@@ -349,7 +427,14 @@ fn claim(
                 .add(name, format.width, format.height)
                 .map_err(|e| add_failed(&e))?;
             match wait_and_claim(nr, format) {
-                Ok(device) => return Ok((device, nr, true)),
+                Ok(device) => {
+                    return Ok(Claimed {
+                        device,
+                        nr,
+                        removable: true,
+                        label,
+                    });
+                }
                 Err(e) => {
                     let _ = control.remove(nr);
                     return Err(open_failed(nr, &e));
@@ -363,12 +448,20 @@ fn claim(
     }
 
     let mut last_error = None;
-    for &(nr, _) in devices
+    for (nr, fixed_label) in devices
         .iter()
         .filter(|(nr, l)| l.starts_with(FIXED_LABEL_PREFIX) && !taken.contains(nr))
     {
+        let nr = *nr;
         match try_claim(nr, format) {
-            Ok(Some(device)) => return Ok((device, nr, false)),
+            Ok(Some(device)) => {
+                return Ok(Claimed {
+                    device,
+                    nr,
+                    removable: false,
+                    label: fixed_label.clone(),
+                });
+            }
             Ok(None) => {}
             Err(e) => last_error = Some((nr, e)),
         }

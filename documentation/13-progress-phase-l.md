@@ -142,9 +142,10 @@ backend's fixed-device count and label prefix match the boot script.
   without root, and the boot service runs before login.
 - Secure Boot: `apt install` of the `.deb` with `v4l2loopback-dkms`, MOK enrolment, cameras
   after the reboot.
-- Logout or shutdown: the GUI app gets SIGTERM, which it doesn't handle, so its devices stay
-  behind until the next start (invisible meanwhile, then reused). Handling SIGTERM like Ctrl+C
-  would need a small platform hook.
+- Logout or shutdown: the GUI app now quits on SIGTERM like the tray's Quit (§8), removing its
+  devices. Checked headless only; the GUI path at a real logout still needs a person.
+- An edit while a call app reads the camera (§8): the app keeps getting pictures on 0.13+ and
+  0.12, including after a size change (0.12 may refuse a new size while a reader holds it).
 - Two users logged in at once, each running the app (devices are per name and "free" is per
   writer, so it should work).
 
@@ -164,3 +165,14 @@ backend's fixed-device count and label prefix match the boot script.
 1. Do §5 on a real machine. Install the `.deb` from the `linux-packages` job (run
    `release.yml` with workflow_dispatch to get one without a tag).
 2. Phase M (macOS), [11 §6](11-virtual-cameras-linux-macos-plan.md#6-phase-m--macos-coremediaio-camera-extension).
+
+## 8. Fixes after phase L (2026-10-10, `feat/linux-sigterm-and-device-removal`)
+
+| Problem | Fix |
+|---|---|
+| SIGTERM (logout, shutdown, `kill`, `systemctl stop`) ended the app without removing its devices. | `rtspcam_platform::desktop::termination_requested()` resolves on SIGTERM or SIGHUP on Linux and macOS (never on Windows, where the cameras go with the process). Headless waits for it next to Ctrl+C; the GUI quits through the event loop like the tray's Quit. Checked in a container: SIGTERM logs "received SIGTERM", shuts down in order and exits 0. |
+| Any edit re-created the camera: the manager removed it, then added it. Removing a device an app still has open fails (`EBUSY`), so it lingered; on 0.12 the stream then took the first free "RTSP Cam N", possibly another one, and the app in the call read a device nobody wrote to. | The manager no longer calls `remove` for an edited stream; it calls `create` again for the same id (re-creating replaces, on every backend). On Linux, `create` for an existing id stops the old pusher and takes the **same** device again (`keep_device`). A renamed stream gets a new device with the new label if the old one can be removed; if an app has it open, the camera stays on it under the old label. Only if the device can't be taken again (another writer, a format it refuses) does it fall back to finding a device as for a new camera. |
+
+The manager test `edits_rebuild_only_what_changed_and_removals_remove` now checks that an edit
+doesn't call `remove`, and that removing the stream does.
+

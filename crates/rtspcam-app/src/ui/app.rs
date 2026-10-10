@@ -136,6 +136,16 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
         });
     }));
 
+    // Logout and shutdown (SIGTERM on Linux) quit like the tray's Quit, so the cameras are
+    // removed instead of left behind.
+    if let Some(runtime) = app.core.runtime() {
+        runtime.spawn(async {
+            crate::termination_requested().await;
+            tracing::info!("the system asked the app to quit");
+            let _ = slint::invoke_from_event_loop(|| with_app(|app| app.quit()));
+        });
+    }
+
     app.refresh_list();
     app.start_timers();
 

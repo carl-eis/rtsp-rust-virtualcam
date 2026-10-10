@@ -131,10 +131,13 @@ fn run_headless(
     };
 
     tracing::info!("running; press Ctrl+C to quit");
-    manager
-        .handle()
-        .block_on(tokio::signal::ctrl_c())
-        .context("could not wait for Ctrl+C")?;
+    // SIGTERM (`kill`, `systemctl stop`, logout) quits the same way, so the cameras go too.
+    manager.handle().block_on(async {
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r.context("could not wait for Ctrl+C"),
+            () = termination_requested() => Ok(()),
+        }
+    })?;
     tracing::info!("quitting");
 
     drop(watcher);
@@ -143,4 +146,13 @@ fn run_headless(
         Err(_) => tracing::warn!("the manager is still shared; ending the process instead"),
     }
     Ok(())
+}
+
+/// Resolves when the system asks the app to end (SIGTERM on Linux and macOS); never if that
+/// can't be watched.
+pub(crate) async fn termination_requested() {
+    if let Err(e) = rtspcam_platform::desktop::termination_requested().await {
+        tracing::warn!(error = %e, "cannot watch for the system asking the app to quit");
+        std::future::pending::<()>().await;
+    }
 }

@@ -52,6 +52,7 @@ workspace = true
 chacha20poly1305 = "0.10"
 keyring-core = "1"
 rand.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.155"
