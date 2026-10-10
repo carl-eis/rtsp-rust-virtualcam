@@ -148,21 +148,21 @@ async fn write_frames(
         // by when the next one has replaced it.
         // Waits on the source's signal where it has one: a short sleep lasts a whole timer tick
         // on Windows (about 15.6 ms), longer than the half slot at high frame rates. The
-        // signal is taken before looking, so a picture published in between still ends the
-        // wait.
+        // signal is only taken once a picture is late, and is taken before looking again, so a
+        // picture published in between still ends the wait.
         let late_until = now + frame_interval(format) / 2;
-        let mut signal = source.picture_signal();
         let mut next = source.next_frame(format, last_seq, &mut data);
         while next.is_none() && streaming && tokio::time::Instant::now() < late_until {
-            match signal {
-                Some(s) => {
-                    if tokio::time::timeout_at(late_until, s).await.is_err() {
+            match source.picture_signal() {
+                Some(signal) => {
+                    next = source.next_frame(format, last_seq, &mut data);
+                    if next.is_some() || tokio::time::timeout_at(late_until, signal).await.is_err()
+                    {
                         break;
                     }
                 }
                 None => tokio::time::sleep(LATE_POLL).await,
             }
-            signal = source.picture_signal();
             next = source.next_frame(format, last_seq, &mut data);
         }
         if let Some(seq) = next {

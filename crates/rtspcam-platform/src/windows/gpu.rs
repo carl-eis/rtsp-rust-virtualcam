@@ -541,6 +541,9 @@ impl CopyBack {
             {
                 let _lock = gpu.lock();
                 if out == (vw, vh) {
+                    // Not scaling: drop the scaler, whose input views hold decoder surfaces
+                    // (only blits sweep them).
+                    self.scaler = None;
                     copy_started = Instant::now();
                     let region = D3D11_BOX {
                         left: vx,

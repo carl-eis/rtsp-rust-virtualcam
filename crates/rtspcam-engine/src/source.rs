@@ -76,8 +76,13 @@ impl Output {
             .made_from
             .as_ref()
             .is_some_and(|f| Arc::ptr_eq(f, frame));
-        if same && resend && !self.cached {
-            self.make(frame, format, fit, Some(out));
+        if same && resend {
+            if self.cached {
+                out.clear();
+                out.extend_from_slice(&self.bytes);
+            } else {
+                self.make(frame, format, fit, Some(out));
+            }
             return;
         }
         if same {

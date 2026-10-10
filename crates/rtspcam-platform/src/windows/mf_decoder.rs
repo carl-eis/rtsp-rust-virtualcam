@@ -180,8 +180,10 @@ struct OutputFormat {
     visible: (u32, u32, u32, u32),
 }
 
-/// Failed key frames in a row, before any picture, after which hardware decoding is given up.
-const EARLY_FAILURES_LOST: u32 = 3;
+/// Decode errors before any picture after which hardware decoding is given up. Each error
+/// makes the pipeline skip to the next key frame, so every one more costs a key frame interval
+/// of no picture before software decoding takes over.
+const EARLY_FAILURES_LOST: u32 = 2;
 
 pub(crate) struct MfDecoder {
     // Field order matters: COM objects must be released before Media Foundation shuts down.
@@ -485,8 +487,8 @@ impl MfDecoder {
 
     /// In Direct3D 11 mode, a lost device, or repeated failures before the first picture, mean
     /// this decoder can't go on: the pipeline replaces it (in software after early failures).
-    /// A single early failure is more likely a damaged key frame, so decoding just moves on to
-    /// the next one.
+    /// A single early failure is more likely a damaged key frame, so decoding gets one more
+    /// key frame before giving up.
     fn classify(&mut self, e: PipelineError) -> PipelineError {
         let Some(copy_back) = &self.copy_back else {
             return e;
