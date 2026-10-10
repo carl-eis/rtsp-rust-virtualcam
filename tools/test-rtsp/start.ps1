@@ -51,7 +51,7 @@ if ($missing) {
     ) -join [Environment]::NewLine)
 }
 
-Write-Host 'Test streams (rtsp://127.0.0.1:8554/...): h264-720p, h264-1080p, h265-720p, mjpeg-720p, secure (rtspcam / rtspcam-test)'
+Write-Host 'Test streams (rtsp://127.0.0.1:8554/...): h264-720p, h264-1080p, h265-720p, h265-1080p, h264-2160p, h264-1080p60, h264-4x3, mjpeg-720p, secure (rtspcam / rtspcam-test)'
 Write-Host 'Press Ctrl+C to stop.'
 & mediamtx $config
 exit $LASTEXITCODE

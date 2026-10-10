@@ -113,7 +113,9 @@ impl StreamConfig {
             push(Field::Password, Problem::PasswordLocked);
         }
         if !self.output.is_supported() {
-            let OutputFormat { width, height, fps } = self.output;
+            let OutputFormat {
+                width, height, fps, ..
+            } = self.output;
             push(
                 Field::Output,
                 Problem::UnsupportedOutput { width, height, fps },
@@ -225,7 +227,7 @@ mod tests {
         s.port = 0;
         s.path = "/a b".into();
         s.password = Some(Secret::from_stored("dpapi:AAAA"));
-        s.output.fps = 60;
+        s.output.fps = 50;
         let fields: Vec<Field> = s.validate().into_iter().map(|i| i.field).collect();
         assert_eq!(
             fields,

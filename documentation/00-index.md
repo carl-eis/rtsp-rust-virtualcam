@@ -23,6 +23,8 @@ Section numbers (§) refer to the headings inside each document.
   real module with ffmpeg but not yet in browsers or call apps. Since then SIGTERM quits cleanly
   and an edited stream keeps its device ([13 §8](13-progress-phase-l.md#8-fixes-after-phase-l-2026-10-10-featlinux-sigterm-and-device-removal)). Phase M is not started, so macOS
   still uses `UnsupportedCameras`.
+- **Output formats:** 60 fps and a "Source" size (the camera's own) were added for issue #13
+  ([17](17-progress-issue-13.md), 2026-10-10).
 
 ## 2. The documents
 
@@ -45,6 +47,7 @@ Section numbers (§) refer to the headings inside each document.
 | 14 | [14-progress-phase-8.md](14-progress-phase-8.md) | Progress | Steps 8.0–8.3 of 08.1 | **Current** hardware decoding (D3D11, copy-back, fence), the setting, decoder swap without reconnect, size limits, the `bench` command and the CPU measurements before/after |
 | 15 | [15-obs-virtualcam-comparison.md](15-obs-virtualcam-comparison.md) | Review | Virtual cameras vs OBS Studio's (Windows, Linux, macOS) | **Current** missing features, low-hanging fixes (pacing timer, timestamps, YUY2), lessons for phase M |
 | 16 | [16-progress-issue-12.md](16-progress-issue-12.md) | Progress | Issue #12 (15 §4.1–4.3, 4.5) | **Current** high-resolution frame pacing in the DLL, even timestamps, YUY2/I420 on Windows, sample pool and feed buffer reuse, frame-gap measurements; the STREAMON check (15 §4.4) still needs a person (issue #17) |
+| 17 | [17-progress-issue-13.md](17-progress-issue-13.md) | Progress | Issue #13 (15 §5 "60 fps") | **Current** 60 fps output (36 media types), the "Source" resolution (`output.source`, `source-sizes.json`, re-create when no app uses the camera), 1080p60 CPU and frame-gap measurements |
 
 ### Which documents are current
 
@@ -64,7 +67,8 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Linux packaging through `/etc/modules-load.d` and `/etc/modprobe.d` (11 §4 L3) | A boot service that picks options by module version: [13 §3](13-progress-phase-l.md#3-decisions-beyond-the-plan) |
 | "CPU per stage was never measured", "decoding is software today" (08.1 §1, 03 §4.2) | Measured and built: [14 §3](14-progress-phase-8.md#3-measurements) |
 | Low-hanging fixes 15 §4.1–4.3 and 4.5 (proposed) | Built: [16](16-progress-issue-12.md); 15 §4.4 still open |
-| Next free document number (04, 05, 06, 07, 13) | 17. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
+| Advertised formats "1080p/720p/480p at 30 and 15 fps", 24 media types (03, 15, 16) | 60 fps added and a "Source" size: 36 (or 48) types, [17 §1](17-progress-issue-13.md#1-what-was-done) |
+| Next free document number (04, 05, 06, 07, 13) | 18. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
 ## 3. Reading order by task
 
@@ -144,6 +148,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Developer install of the DLL, `vcam` CLI checks | [03 §4.3](03-progress-phases-2-3.md#43-phase-3), [04 §6](04-session-2026-10-09.md#6-how-to-resume) |
 | Never `Path::exists` on a pipe | [05 §2](05-progress-phases-4-5.md#changes-outside-the-app-crate) |
 | Frame pacing (high-resolution timer), sample timestamps, offered formats, sample pool | [16 §1](16-progress-issue-12.md#1-what-was-done), measurements in [16 §2](16-progress-issue-12.md#2-measurements) |
+| 60 fps, the "Source" size and when a camera is re-created for it | [17 §1](17-progress-issue-13.md#1-what-was-done), measurements in [17 §2](17-progress-issue-13.md#2-measurements) |
 
 ### Camera manager and UI
 

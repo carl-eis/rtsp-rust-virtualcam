@@ -250,20 +250,66 @@ pub enum FitMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OutputFormat {
+    /// With [`source`](Self::source) set, the size used until the camera's own size is known
+    /// (and the size older versions, which don't know `source`, use).
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    /// Offer the camera's own picture size (no scaling) instead of `width` x `height`. The size
+    /// is known only once the stream has connected; see [`source_size`](Self::source_size).
+    #[serde(skip_serializing_if = "is_false")]
+    pub source: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl OutputFormat {
     /// Resolutions the virtual camera offers, largest first.
     pub const RESOLUTIONS: [(u32, u32); 3] = [(1920, 1080), (1280, 720), (640, 480)];
     /// Frame rates the virtual camera offers.
-    pub const FRAME_RATES: [u32; 2] = [30, 15];
+    pub const FRAME_RATES: [u32; 3] = [60, 30, 15];
+    /// The largest picture a camera can offer (the IPC limit, `rtspcam_ipc::MAX_WIDTH` and
+    /// `MAX_HEIGHT`).
+    pub const MAX_SIZE: (u32, u32) = (4096, 2160);
+    /// The size a "Source" output offers before the camera's own size is known.
+    pub const SOURCE_FALLBACK: (u32, u32) = (1920, 1080);
+
+    /// The "Source" output at `fps`.
+    pub fn source(fps: u32) -> Self {
+        let (width, height) = Self::SOURCE_FALLBACK;
+        Self {
+            width,
+            height,
+            fps,
+            source: true,
+        }
+    }
 
     pub fn is_supported(&self) -> bool {
-        Self::RESOLUTIONS.contains(&(self.width, self.height))
+        (self.source || Self::RESOLUTIONS.contains(&(self.width, self.height)))
             && Self::FRAME_RATES.contains(&self.fps)
+    }
+
+    /// The size to offer for a camera whose pictures are `width` x `height`: the same, made
+    /// even (NV12, YUY2 and I420 need it) and shrunk to fit [`MAX_SIZE`](Self::MAX_SIZE) with
+    /// the same shape. `None` for a picture too small to offer.
+    pub fn source_size(width: u32, height: u32) -> Option<(u32, u32)> {
+        let (mw, mh) = Self::MAX_SIZE;
+        let (w, h) = (u64::from(width), u64::from(height));
+        let (w, h) = if w > u64::from(mw) || h > u64::from(mh) {
+            // The side that overflows most decides the scale.
+            if w * u64::from(mh) >= h * u64::from(mw) {
+                (u64::from(mw), h * u64::from(mw) / w)
+            } else {
+                (w * u64::from(mh) / h, u64::from(mh))
+            }
+        } else {
+            (w, h)
+        };
+        let (w, h) = ((w & !1) as u32, (h & !1) as u32);
+        (w >= 2 && h >= 2).then_some((w, h))
     }
 }
 
@@ -273,6 +319,7 @@ impl Default for OutputFormat {
             width: 1280,
             height: 720,
             fps: 30,
+            source: false,
         }
     }
 }
@@ -397,7 +444,8 @@ mod tests {
             OutputFormat {
                 width: 1280,
                 height: 720,
-                fps: 30
+                fps: 30,
+                source: false
             }
         );
         assert_eq!(s.fit_mode, FitMode::Letterbox);
@@ -461,6 +509,7 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 15,
+            source: false,
         };
         s.fit_mode = FitMode::Crop;
         s.on_demand = false;
@@ -471,6 +520,62 @@ mod tests {
         assert!(text.contains("\"password\": \"keyfile:"));
         let back: Config = serde_json::from_str(&text).unwrap();
         assert_eq!(back, config);
+    }
+
+    #[test]
+    fn source_output_round_trips_and_is_left_out_when_off() {
+        let mut s = StreamConfig::new("Door", "10.0.0.2");
+        let out = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            out["output"],
+            json!({ "width": 1280, "height": 720, "fps": 30 }),
+            "configs without \"Source\" are written as before"
+        );
+        s.output = OutputFormat::source(60);
+        let out = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            out["output"],
+            json!({ "width": 1920, "height": 1080, "fps": 60, "source": true })
+        );
+        let back: StreamConfig = serde_json::from_value(out).unwrap();
+        assert_eq!(back.output, s.output);
+        assert!(back.output.is_supported());
+    }
+
+    #[test]
+    fn supported_outputs() {
+        let fixed = |width, height, fps| OutputFormat {
+            width,
+            height,
+            fps,
+            source: false,
+        };
+        assert!(fixed(1920, 1080, 60).is_supported());
+        assert!(fixed(640, 480, 15).is_supported());
+        assert!(!fixed(1280, 720, 25).is_supported());
+        assert!(!fixed(2560, 1440, 30).is_supported());
+        // "Source" takes any size (the camera's replaces it), but not any rate.
+        assert!(OutputFormat::source(30).is_supported());
+        let odd = OutputFormat {
+            width: 7,
+            ..OutputFormat::source(30)
+        };
+        assert!(odd.is_supported());
+        assert!(!OutputFormat::source(24).is_supported());
+    }
+
+    #[test]
+    fn source_sizes_are_even_and_within_the_limits() {
+        assert_eq!(OutputFormat::source_size(1920, 1080), Some((1920, 1080)));
+        assert_eq!(OutputFormat::source_size(2560, 1440), Some((2560, 1440)));
+        assert_eq!(OutputFormat::source_size(3840, 2160), Some((3840, 2160)));
+        assert_eq!(OutputFormat::source_size(1281, 721), Some((1280, 720)));
+        // Too large: shrunk to fit, keeping the shape.
+        assert_eq!(OutputFormat::source_size(4000, 3000), Some((2880, 2160)));
+        assert_eq!(OutputFormat::source_size(8192, 2160), Some((4096, 1080)));
+        assert_eq!(OutputFormat::source_size(7680, 4320), Some((3840, 2160)));
+        assert_eq!(OutputFormat::source_size(1, 1), None);
+        assert_eq!(OutputFormat::source_size(0, 720), None);
     }
 
     #[test]

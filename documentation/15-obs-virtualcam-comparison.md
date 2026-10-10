@@ -202,7 +202,7 @@ At 1080p RGB32 that is 2 × 8 MB per frame in Frame Server. Keep a spare `Vec` i
   Needs care with the "late picture" logic in `server.rs` and with the push backends, which
   share the rules (`push.rs`).
 - **60 fps.** Requires lifting the 30 fps cap in config validation and the advertised list;
-  only useful for sources that deliver it.
+  only useful for sources that deliver it. *Built, with a "Source" size option: [17](17-progress-issue-13.md).*
 
 ## 6. Lessons for phase M (macOS), from OBS's extension
 

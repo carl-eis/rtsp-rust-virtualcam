@@ -1,5 +1,6 @@
 //! What the UI shows for each camera.
 
+use rtspcam_core::OutputFormat;
 use rtspcam_ipc::StreamStatus;
 use rtspcam_pipeline::{ErrorKind, StreamState};
 use uuid::Uuid;
@@ -92,6 +93,9 @@ pub struct CameraStatus {
     pub clients: usize,
     /// Open preview windows.
     pub previews: usize,
+    /// The output the camera lists first (width, height, fps). For a "Source" stream, the
+    /// camera's picture size as last seen.
+    pub offered: (u32, u32, u32),
 }
 
 impl CameraStatus {
@@ -106,5 +110,65 @@ impl CameraStatus {
             Activity::Running(StreamState::Retrying { error, .. }) => Some(error.kind()),
             _ => None,
         }
+    }
+}
+
+/// The output part of a stream's details, for example "1280x720 @ 30 fps", or for a "Source"
+/// stream "the camera's own size (2560x1440) @ 60 fps". `offered` is the running camera's
+/// [`CameraStatus::offered`], if it has one.
+pub fn output_summary(output: &OutputFormat, offered: Option<(u32, u32, u32)>) -> String {
+    if output.source {
+        let (w, h) = offered
+            .map(|(w, h, _)| (w, h))
+            .unwrap_or(OutputFormat::SOURCE_FALLBACK);
+        format!("the camera's own size ({w}x{h}) @ {} fps", output.fps)
+    } else {
+        format!("{}x{} @ {} fps", output.width, output.height, output.fps)
+    }
+}
+
+/// A note for when the camera sends noticeably fewer pictures per second (`camera_fps`, as
+/// measured) than the virtual camera's `output_fps`: apps then get some pictures twice, which
+/// a viewer can't tell from a stutter.
+pub fn frame_rate_note(camera_fps: f32, output_fps: u32) -> Option<String> {
+    // Measured once a second, so allow for a frame or so of slack.
+    (camera_fps > 0.0 && camera_fps < output_fps as f32 * 0.9).then(|| {
+        format!(
+            "The camera sends {camera_fps:.1} fps, fewer than the {output_fps} fps output: \
+             apps see some pictures twice."
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_lines() {
+        let fixed = OutputFormat::default();
+        assert_eq!(output_summary(&fixed, None), "1280x720 @ 30 fps");
+        assert_eq!(output_summary(&fixed, Some((1, 1, 1))), "1280x720 @ 30 fps");
+        let source = OutputFormat::source(60);
+        assert_eq!(
+            output_summary(&source, Some((2560, 1440, 60))),
+            "the camera's own size (2560x1440) @ 60 fps"
+        );
+        assert_eq!(
+            output_summary(&source, None),
+            "the camera's own size (1920x1080) @ 60 fps"
+        );
+    }
+
+    #[test]
+    fn repeated_pictures_are_pointed_out() {
+        assert!(frame_rate_note(25.0, 60).unwrap().contains("25.0 fps"));
+        assert!(frame_rate_note(29.0, 60).is_some());
+        // Close enough: a frame more or less in a one-second measurement.
+        assert_eq!(frame_rate_note(59.0, 60), None);
+        assert_eq!(frame_rate_note(28.5, 30), None);
+        assert_eq!(frame_rate_note(30.0, 15), None);
+        // Nothing measured yet.
+        assert_eq!(frame_rate_note(0.0, 60), None);
     }
 }

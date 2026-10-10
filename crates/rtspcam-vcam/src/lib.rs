@@ -40,7 +40,7 @@ use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use windows_core::{BOOL, GUID, HRESULT, IUnknown, Interface as _, Ref, implement};
 
 pub use activate::create_activate;
-pub use source::RTSPCAM_ATTR_CAMERA_ID;
+pub use source::{RTSPCAM_ATTR_CAMERA_ID, RTSPCAM_ATTR_PREFERRED_FORMAT};
 
 use crate::guard::{ModuleRef, guard, lock_server};
 use crate::log::log;

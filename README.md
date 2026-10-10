@@ -63,6 +63,12 @@ of checks that still need a person.
 - **Picture options** (**Picture...** in the stream dialog): rotate, flip, crop, show the name or
   the time, and choose what apps see when the stream drops (a "no signal" picture or the last
   frame).
+- **Output size and rate:** 1920×1080, 1280×720 or 640×480 at 60, 30 or 15 fps, or **Source**:
+  the camera's own picture size (for example a 4:3 or 1440p camera, up to 4096×2160), learned
+  on the first connection. On Windows each camera offers apps every fixed size and rate (plus
+  the camera's size for Source), the stream's choice first; on Linux the device has the
+  stream's choice. The stream details say when the
+  camera sends fewer frames than the output rate (apps then see some pictures twice).
 - **On demand:** a stream can connect only while an app uses its camera.
 - **Import / export** (**File > Export / Import streams**) to move streams between PCs
   (passwords are not included).

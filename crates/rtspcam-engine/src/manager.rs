@@ -16,16 +16,23 @@
 //!
 //! On-demand streams connect only while an app uses the webcam or a [`Preview`] is open, and
 //! disconnect [`idle_grace`](ManagerOptions::idle_grace) after the last one leaves.
+//!
+//! A "Source" stream's camera offers the camera's own picture size, which is known only once
+//! the stream connects. The camera is created with the size seen last time (remembered in
+//! [`ManagerOptions::source_sizes`]), or the configured size before the first connection. When
+//! the stream turns out to have another size, the virtual camera is re-created with it as soon
+//! as no app is using it; until then apps get the pictures scaled to the size they chose.
 
 use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread;
 use std::time::Duration;
 
 use rtspcam_core::config::{OnDisconnect, Picture, Rotation, StreamConfig};
 use rtspcam_core::profile::{self, Stage};
-use rtspcam_core::{Config, FitMode};
+use rtspcam_core::{Config, FitMode, OutputFormat};
 use rtspcam_ipc::source::PictureSignal;
 use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
@@ -34,13 +41,15 @@ use rtspcam_pipeline::{
 };
 use rtspcam_platform::{CameraError, CameraSpec, VirtualCameraBackend};
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::overlay::{Overlay, local_time_text};
 use crate::source::CameraSource;
+pub use crate::source_sizes::FILE_NAME as SOURCE_SIZES_FILE;
+use crate::source_sizes::SourceSizes;
 use crate::status::{Activity, CameraStatus, VcamState};
 
 type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -56,6 +65,9 @@ pub struct ManagerOptions {
     /// Tell each pipeline the largest picture its consumers and preview ask for, so a
     /// decoder that can shrink pictures cheaply (on the GPU) does it right away.
     pub limit_decoded_size: bool,
+    /// Where to remember the picture size of each "Source" stream's camera across runs
+    /// (normally [`SOURCE_SIZES_FILE`] in the config folder). `None`: in memory only.
+    pub source_sizes: Option<PathBuf>,
 }
 
 impl Default for ManagerOptions {
@@ -64,6 +76,7 @@ impl Default for ManagerOptions {
             idle_grace: Duration::from_secs(10),
             on_change: Arc::new(|| {}),
             limit_decoded_size: true,
+            source_sizes: None,
         }
     }
 }
@@ -73,6 +86,7 @@ impl std::fmt::Debug for ManagerOptions {
         f.debug_struct("ManagerOptions")
             .field("idle_grace", &self.idle_grace)
             .field("limit_decoded_size", &self.limit_decoded_size)
+            .field("source_sizes", &self.source_sizes)
             .finish_non_exhaustive()
     }
 }
@@ -205,6 +219,8 @@ pub(crate) struct CameraShared {
     requests: Option<Mutex<Requests>>,
     /// The camera's picture size, once a picture arrived (`Frame::source_size`).
     source_size: AtomicSize,
+    /// What the virtual camera lists first: [`CameraSpec::preferred`].
+    offered: Mutex<(u32, u32, u32)>,
     notify: Notify,
 }
 
@@ -223,6 +239,7 @@ impl CameraShared {
             pipeline: Mutex::new(None),
             requests: Some(Mutex::default()),
             source_size: AtomicSize::default(),
+            offered: Mutex::new((config.output.width, config.output.height, config.output.fps)),
             notify,
         }
     }
@@ -405,6 +422,7 @@ impl CameraShared {
                 .clone(),
             clients: demand.clients,
             previews: demand.previews,
+            offered: *self.offered.lock().unwrap_or_else(PoisonError::into_inner),
         }
     }
 
@@ -461,6 +479,25 @@ struct Camera {
     config: StreamConfig,
     state: Arc<CameraShared>,
     supervisor: JoinHandle<()>,
+    /// For a "Source" stream: watches the camera's picture size.
+    follower: Option<JoinHandle<()>>,
+}
+
+impl Camera {
+    fn abort_tasks(&self) {
+        self.supervisor.abort();
+        if let Some(f) = &self.follower {
+            f.abort();
+        }
+    }
+}
+
+/// A "Source" stream's camera sends `size` pictures: remember the size, and with `recreate`
+/// re-create the virtual camera with it.
+struct Resize {
+    camera: Arc<CameraShared>,
+    size: (u32, u32),
+    recreate: bool,
 }
 
 struct Shared {
@@ -469,6 +506,9 @@ struct Shared {
     backend: Arc<dyn VirtualCameraBackend>,
     options: ManagerOptions,
     handle: Handle,
+    source_sizes: SourceSizes,
+    /// To the reconciler, which also creates and removes the cameras.
+    resize: mpsc::UnboundedSender<Resize>,
 }
 
 /// Owns every camera. See the [module docs](self).
@@ -495,15 +535,18 @@ impl CameraManager {
             .enable_all()
             .thread_name("rtspcam")
             .build()?;
+        let (resize, resize_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             cameras: Mutex::default(),
             paused: watch::Sender::new(false),
             backend,
+            source_sizes: SourceSizes::load(options.source_sizes.clone()),
             options,
             handle: runtime.handle().clone(),
+            resize,
         });
         let (config_tx, config_rx) = watch::channel(Arc::new(Config::default()));
-        let reconciler = runtime.spawn(reconcile_loop(shared.clone(), config_rx));
+        let reconciler = runtime.spawn(reconcile_loop(shared.clone(), config_rx, resize_rx));
         Ok(Self {
             runtime: Some(runtime),
             shared,
@@ -609,7 +652,7 @@ impl CameraManager {
             .map(|(_, c)| c)
             .collect();
         for c in &cameras {
-            c.supervisor.abort();
+            c.abort_tasks();
         }
         self.shared.backend.remove_all();
         for c in &cameras {
@@ -632,14 +675,31 @@ impl Drop for CameraManager {
     }
 }
 
-async fn reconcile_loop(shared: Arc<Shared>, mut rx: watch::Receiver<Arc<Config>>) {
-    while rx.changed().await.is_ok() {
-        let config = rx.borrow_and_update().clone();
-        reconcile(&shared, &config).await;
+/// Applies configs and re-creates "Source" cameras whose size changed, one thing at a time, so
+/// a camera is never created and removed at once.
+async fn reconcile_loop(
+    shared: Arc<Shared>,
+    mut rx: watch::Receiver<Arc<Config>>,
+    mut resize: mpsc::UnboundedReceiver<Resize>,
+) {
+    loop {
+        tokio::select! {
+            r = rx.changed() => {
+                if r.is_err() {
+                    return;
+                }
+                let config = rx.borrow_and_update().clone();
+                reconcile(&shared, &config).await;
+            }
+            Some(r) = resize.recv() => resize_camera(&shared, r).await,
+        }
     }
 }
 
 async fn reconcile(shared: &Arc<Shared>, config: &Config) {
+    shared
+        .source_sizes
+        .retain(|id| config.stream(id).is_some_and(|s| s.output.source));
     let wanted: Vec<&StreamConfig> = config.streams.iter().filter(|s| s.enabled).collect();
 
     // Remove what is gone or changed.
@@ -684,7 +744,7 @@ async fn reconcile(shared: &Arc<Shared>, config: &Config) {
 
 /// Stops a camera's pipeline, and removes its virtual camera when `remove_vcam`.
 async fn remove_camera(shared: &Arc<Shared>, camera: Camera, remove_vcam: bool) {
-    camera.supervisor.abort();
+    camera.abort_tasks();
     camera.state.set_bus(None);
     if let Some(pipeline) = camera.state.take_pipeline() {
         let _ = tokio::task::spawn_blocking(move || pipeline.stop()).await;
@@ -703,6 +763,8 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
     if !shared.options.limit_decoded_size {
         state = state.without_size_limit();
     }
+    let preferred = offered_output(config, shared.source_sizes.get(config.id));
+    *state.offered.lock().unwrap_or_else(PoisonError::into_inner) = preferred;
     let state = Arc::new(state);
 
     let supervisor = shared.handle.spawn(supervise(
@@ -712,6 +774,13 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
         shared.paused.subscribe(),
         shared.options.idle_grace,
     ));
+    let follower = config.output.source.then(|| {
+        shared.handle.spawn(follow_source_size(
+            state.clone(),
+            shared.resize.clone(),
+            (preferred.0, preferred.1),
+        ))
+    });
 
     shared
         .cameras
@@ -723,17 +792,41 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
                 config: config.clone(),
                 state: state.clone(),
                 supervisor,
+                follower,
             },
         );
     (shared.options.on_change)();
 
-    // Creating the camera is the slow part; the backend gets the camera's frames with it.
+    let result = create_vcam(shared, &state, preferred).await;
+    state.vcam_created(result);
+}
+
+/// What a stream's camera lists first: the configured output, or for a "Source" stream the
+/// camera's picture size (`seen`, if it has connected before).
+fn offered_output(config: &StreamConfig, seen: Option<(u32, u32)>) -> (u32, u32, u32) {
+    let o = config.output;
+    let (width, height) = if o.source {
+        seen.or_else(|| OutputFormat::source_size(o.width, o.height))
+            .unwrap_or(OutputFormat::SOURCE_FALLBACK)
+    } else {
+        (o.width, o.height)
+    };
+    (width, height, o.fps)
+}
+
+/// Creates (or re-creates) `camera`'s virtual camera, offering `preferred` first. Creating the
+/// camera is the slow part; the backend gets the camera's frames with it.
+async fn create_vcam(
+    shared: &Arc<Shared>,
+    camera: &Arc<CameraShared>,
+    preferred: (u32, u32, u32),
+) -> Result<(), CameraError> {
     let backend = shared.backend.clone();
-    let frames = Arc::new(CameraSource::new(state.clone()));
+    let frames = Arc::new(CameraSource::new(camera.clone()));
     let spec = CameraSpec {
-        id: config.id,
-        name: config.name.clone(),
-        preferred: (config.output.width, config.output.height, config.output.fps),
+        id: camera.id,
+        name: camera.name.clone(),
+        preferred,
     };
     let id = spec.id;
     let runtime = shared.handle.clone();
@@ -747,7 +840,108 @@ async fn add_camera(shared: &Arc<Shared>, config: &StreamConfig) {
             tracing::error!(%id, error = %why, "could not create the virtual camera");
         }
     }
-    state.vcam_created(result);
+    result
+}
+
+/// Watches a "Source" stream's picture size. When it differs from the size the virtual camera
+/// offers (`offered`), remembers it and asks for the camera to be re-created with it once no
+/// app is using the camera: re-creating it under an app (a call) would take the camera away
+/// from it. Meanwhile apps get pictures scaled to the size they chose.
+async fn follow_source_size(
+    camera: Arc<CameraShared>,
+    resize: mpsc::UnboundedSender<Resize>,
+    mut offered: (u32, u32),
+) {
+    let mut activity = camera.activity.subscribe();
+    let mut demand = camera.demand.subscribe();
+    let mut seen = None;
+    loop {
+        let send = |size, recreate| {
+            resize
+                .send(Resize {
+                    camera: camera.clone(),
+                    size,
+                    recreate,
+                })
+                .is_ok()
+        };
+        if let Activity::Running(StreamState::Streaming(stats)) = &*activity.borrow_and_update()
+            && let Some(size) = OutputFormat::source_size(stats.width, stats.height)
+            && seen != Some(size)
+        {
+            seen = Some(size);
+            // Remembered now, so the next run offers it even if an app keeps the camera.
+            if !send(size, false) {
+                return;
+            }
+        }
+        let in_use = demand.borrow_and_update().clients > 0;
+        if let Some(size) = seen
+            && size != offered
+            && !in_use
+        {
+            tracing::info!(
+                camera = %camera.name,
+                from = ?offered,
+                to = ?size,
+                "the camera's picture size differs from what its virtual camera offers"
+            );
+            if !send(size, true) {
+                return;
+            }
+            offered = size;
+        }
+        tokio::select! {
+            r = activity.changed() => if r.is_err() { return },
+            r = demand.changed() => if r.is_err() { return },
+        }
+    }
+}
+
+/// Re-creates a "Source" stream's virtual camera with the camera's picture size, and remembers
+/// the size for next time. Nothing happens if the stream was removed or edited meanwhile (its
+/// camera was rebuilt), or its virtual camera doesn't exist.
+async fn resize_camera(
+    shared: &Arc<Shared>,
+    Resize {
+        camera,
+        size,
+        recreate,
+    }: Resize,
+) {
+    let current = shared
+        .cameras
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&camera.id)
+        .is_some_and(|c| Arc::ptr_eq(&c.state, &camera));
+    if !current {
+        return;
+    }
+    shared.source_sizes.set(camera.id, size);
+    if !recreate {
+        return;
+    }
+    let ready = *camera.vcam.lock().unwrap_or_else(PoisonError::into_inner) == VcamState::Ready;
+    if !ready {
+        return;
+    }
+    let preferred = {
+        let mut offered = camera
+            .offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *offered = (size.0, size.1, offered.2);
+        *offered
+    };
+    tracing::info!(camera = %camera.name, ?preferred, "re-creating the camera with its picture size");
+    if let Err(e) = create_vcam(shared, &camera, preferred).await {
+        *camera.vcam.lock().unwrap_or_else(PoisonError::into_inner) = match e {
+            CameraError::Unsupported(why) => VcamState::Unsupported(why),
+            CameraError::Failed(why) => VcamState::Failed(why),
+        };
+    }
+    (shared.options.on_change)();
 }
 
 /// Starts and stops a camera's RTSP pipeline as demand and the pause switch change.
@@ -964,6 +1158,35 @@ mod tests {
             source_size_for(1280, 720, FitMode::Letterbox, &Picture::default(), source),
             (1280, 720)
         );
+    }
+
+    #[test]
+    fn the_cameras_own_size_is_decoded_without_shrinking() {
+        use rtspcam_pipeline::decode::limited_size;
+        // A "Source" camera's apps ask for the camera's size (made even and kept within the
+        // limits), so the decoder's limit lets whole pictures through.
+        for (sw, sh) in [(1920, 1080), (2560, 1440), (1440, 1080), (3840, 2160)] {
+            let (w, h) = OutputFormat::source_size(sw, sh).unwrap();
+            let cam = camera(Picture::default());
+            cam.source_size.set(Some((sw, sh)));
+            cam.note_request(w, h, FitMode::Letterbox);
+            assert_eq!(cam.size_limit(), Some((sw, sh)));
+            assert_eq!(limited_size(sw, sh, cam.size_limit()), (sw, sh));
+        }
+    }
+
+    #[test]
+    fn source_streams_offer_the_size_seen_or_their_own() {
+        let mut config = StreamConfig::new("Door", "10.0.0.2");
+        config.output = OutputFormat::source(60);
+        assert_eq!(offered_output(&config, None), (1920, 1080, 60));
+        assert_eq!(
+            offered_output(&config, Some((1440, 1080))),
+            (1440, 1080, 60)
+        );
+        // A fixed size ignores what was seen.
+        config.output = OutputFormat::default();
+        assert_eq!(offered_output(&config, Some((1440, 1080))), (1280, 720, 30));
     }
 
     #[test]
