@@ -1,4 +1,4 @@
-# 17 — Progress: 60 fps output and a "Source" resolution (issue #13)
+# 18 — Progress: 60 fps output and a "Source" resolution (issue #13)
 
 Date: 2026-10-10. Continues [15 §5](15-obs-virtualcam-comparison.md#5-bigger-items-not-low-hanging)
 ("60 fps") and builds on the high-resolution pacing in [16](16-progress-issue-12.md). Tracked in
