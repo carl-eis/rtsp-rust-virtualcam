@@ -13,7 +13,7 @@ kernel driver is needed. Cameras exist only while the app is running.
 | | Windows 11 | Linux | macOS |
 |---|---|---|---|
 | App window, stream list, live preview, dialogs, tray | yes | yes (tray needs a StatusNotifierItem host) | builds and passes its tests in CI; **not yet run** |
-| Virtual cameras | yes | not yet ("not supported on this platform yet") | not yet |
+| Virtual cameras | yes | yes, with v4l2loopback ([below](#virtual-cameras-on-linux)); checked with ffmpeg and v4l2-ctl, not yet in browsers or call apps | not yet |
 | Decoding | H.264, H.265 (with the HEVC extension), MJPEG | H.264 only (OpenH264) | H.264 only (OpenH264) |
 | Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
 | Start at login | Run key | XDG autostart | LaunchAgent |
@@ -21,8 +21,9 @@ kernel driver is needed. Cameras exist only while the app is running.
 The cross-platform restructure (Slint UI, `rtspcam-platform`, `rtspcam-engine`) is described
 in [09 (plan)](documentation/09-cross-platform-plan.md) and
 [10 (progress)](documentation/10-progress-cross-platform.md). CI builds, lints and tests on
-Windows, Linux and macOS. Virtual cameras for Linux (v4l2loopback) and macOS (a camera
-extension) are planned in [11](documentation/11-virtual-cameras-linux-macos-plan.md).
+Windows, Linux and macOS. Virtual cameras on Linux use v4l2loopback
+([13](documentation/13-progress-phase-l.md)); macOS (a camera extension) is planned in
+[11](documentation/11-virtual-cameras-linux-macos-plan.md).
 
 > **Status:** early development. The RTSP pipeline (Phase 2) works from the developer CLI. The
 > virtual camera media source (Phase 3) is built and tested in-process but not yet verified in
@@ -50,9 +51,11 @@ cargo run -p rtspcam-app                 # debug build, opens the window
 Click **Add stream**, enter the camera's IP address (plus user name and password), use
 **Test connection**, then **OK**. The stream's live preview appears in the window.
 Config and logs go to the per-user folders listed under [Configuration](#configuration)
-(on Windows `%APPDATA%\RtspCam\config.json` and `%LOCALAPPDATA%\RtspCam\logs`). On Linux and
-macOS the status line says "Virtual cameras are not supported on this platform yet": streams
-preview, but don't become cameras.
+(on Windows `%APPDATA%\RtspCam\config.json` and `%LOCALAPPDATA%\RtspCam\logs`). On Linux each
+stream becomes a camera once v4l2loopback is installed ([Virtual cameras on
+Linux](#virtual-cameras-on-linux)); without it the status line says what to install. On macOS
+it says "Virtual cameras are not supported on this platform yet": streams preview, but don't
+become cameras.
 
 Or click **Find cameras**: ONVIF cameras on your network are listed. Pick one, enter its
 login, **Get streams**, choose the main or sub stream, and the Add dialog opens filled in.
@@ -97,6 +100,53 @@ exe is self-contained apart from `rtspcam_vcam.dll`, which is built with
 The setup program needs admin rights once. It installs to `C:\Program Files\RtspCam`, registers
 the virtual camera DLL, and removes both on uninstall (your config is kept). Pushing a `v*` tag
 builds it in CI; see [08](documentation/08-progress-phase-7.md) for signing.
+
+## Virtual cameras on Linux
+
+The cameras are [v4l2loopback](https://github.com/v4l2loopback/v4l2loopback) devices: a kernel
+module that makes `/dev/videoN` devices which RTSP Cam writes to and other apps read like a
+webcam.
+
+**With the release packages.** `sudo apt install ./rtspcam_<version>-1_amd64.deb` (Debian 12+,
+Ubuntu 22.04+) also installs `v4l2loopback-dkms`, which apt pulls in as a recommended package
+(on Ubuntu it's in `universe`). On Fedora, enable [RPM Fusion](https://rpmfusion.org/) and
+install `akmod-v4l2loopback`, then `sudo dnf install ./rtspcam-<version>-1.x86_64.rpm`. The
+package adds:
+
+- `rtspcam-v4l2loopback.service`, which loads the module at boot with the right options for its
+  version (the install runs it once too, so no reboot is needed unless Secure Boot is on).
+- A udev rule (`70-rtspcam.rules`) that lets the logged-in user add and remove v4l2loopback
+  devices, so each stream gets a camera named after it.
+
+**What you get depends on the v4l2loopback version** (`modinfo -F version v4l2loopback`;
+empty means 0.12):
+
+| Version | Distros | Cameras |
+|---|---|---|
+| 0.13 and later | Debian 13 (0.15.0), Ubuntu 26.04 (0.15.3); rolling distros usually | One per stream, named after it, added and removed with the stream. On-demand streams connect only while an app uses the camera. |
+| 0.12 | Ubuntu 22.04 and 24.04, Debian 12 (all 0.12.7) | Four devices made at boot, "RTSP Cam 1" to "RTSP Cam 4"; streams take them in turn, so names don't follow the streams, and at most four streams become cameras. On-demand streams run whenever their camera exists. |
+
+**If the status line says the module is missing or not loaded:**
+
+- *Kernel headers:* DKMS builds the module for the running kernel and needs its headers
+  (`linux-headers-$(uname -r)`; desktop installs normally have them).
+- *Secure Boot:* an unsigned DKMS module only loads once its key is enrolled. Ubuntu asks for a
+  password while installing `v4l2loopback-dkms` and shows the enrolment screen (MOK) at the next
+  boot; enter that password there. Until then `sudo modprobe v4l2loopback` fails with "Key was
+  rejected by service".
+- *Kernel updates:* DKMS rebuilds the module for each new kernel; if that fails there are no
+  cameras until it is fixed (`sudo dkms status`).
+- *Without the package* (built from source, AppImage): install v4l2loopback yourself and load it
+  with `sudo modprobe v4l2loopback exclusive_caps=1`. Without the udev rule only root may add
+  devices, so with 0.13+ create them by hand
+  (`sudo v4l2loopback-ctl add -x 1 -n "Front Door" /dev/video10`, named like the stream; RTSP
+  Cam uses a free device with its stream's name), or run
+  `sudo installer/linux/rtspcam-v4l2loopback` from this repository after `sudo modprobe -r
+  v4l2loopback`.
+
+Apps only list a camera while RTSP Cam is running (the devices are "exclusive caps": they show
+up as cameras only while something writes to them). Browsers and Discord may need a restart to
+see a camera added while they were open.
 
 ## Requirements
 

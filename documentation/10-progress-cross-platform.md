@@ -40,7 +40,7 @@ locally).
 
 | Trait | Windows | Linux | macOS |
 |---|---|---|---|
-| `VirtualCameraBackend` | MF virtual cameras; the backend now also serves the camera's pipe | `UnsupportedCameras` | `UnsupportedCameras` |
+| `VirtualCameraBackend` | MF virtual cameras; the backend now also serves the camera's pipe | v4l2loopback since phase L ([13](13-progress-phase-l.md)); was `UnsupportedCameras` | `UnsupportedCameras` |
 | `SecretStore` (in core) | DPAPI, `dpapi:` (unchanged) | key in Secret Service, `keyring:`; fallback key file, `keyfile:` | key in Keychain, `keyring:`; same fallback |
 | `FileReplace` (in core) | `ReplaceFileW`, fallback copy+rename (unchanged) | copy + rename | copy + rename |
 | `Autostart` | HKCU `Run` value `RtspCam` (unchanged) | `~/.config/autostart/rtspcam.desktop` | `~/Library/LaunchAgents/io.github.carl-eis.rtspcam.plist` |
@@ -131,7 +131,8 @@ Elsewhere:
 - H.265 and MJPEG decode only on Windows (platform decoders); elsewhere only H.264.
 - On-demand streams on push camera backends (added in phase G, [12 §3](12-progress-phase-g.md#3-on-demand-differs-from-windows-when-the-os-cant-tell)):
   if the OS can't say whether an app is reading the camera, the stream runs for as long as its
-  camera exists, not only while an app uses it as on Windows.
+  camera exists, not only while an app uses it as on Windows. On Linux this is the case with
+  v4l2loopback 0.12; 0.13 and later report readers ([13 §1](13-progress-phase-l.md#1-l1-findings)).
 - Linux runtime needs X11/Wayland client libraries (`libx11-6 libxcursor1 libxrandr2 libxi6
   libxkbcommon-x11-0` on X11), loaded at run time.
 - Linux builds need `libfontconfig1-dev`: Slint's font lookup (`fontique`) links fontconfig.

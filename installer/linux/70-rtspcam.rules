@@ -1,0 +1,4 @@
+# Lets the logged-in user add and remove v4l2loopback devices, so RTSP Cam can make a camera
+# per stream. (The /dev/videoN devices themselves get this from systemd's own rules.)
+# Devices still open can't be removed, so this can't take a camera away from an app using it.
+KERNEL=="v4l2loopback", SUBSYSTEM=="misc", TAG+="uaccess"

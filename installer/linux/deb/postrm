@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || true
+fi
+# The module stays loaded until the next boot; nothing loads it after that.
+exit 0

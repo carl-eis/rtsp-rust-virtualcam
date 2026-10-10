@@ -2,7 +2,7 @@
 
 Status (2026-10-10): phase G of [11](11-virtual-cameras-linux-macos-plan.md#3-phase-g--shared-groundwork-portable-small)
 is done on `feat/linux-virtual-camera`. Nothing visible changes: no backend uses the new code
-yet. Next is phase L (Linux) or M (macOS), in either order.
+yet. Phase L (Linux) followed: [13](13-progress-phase-l.md).
 
 | Step (11 §3) | State |
 |---|---|

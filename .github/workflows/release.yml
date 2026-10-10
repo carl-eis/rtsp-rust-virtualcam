@@ -1,7 +1,8 @@
 name: Release
 
-# Builds the installer when a version tag is pushed (v0.1.0, ...). The installer, exe and DLL
-# are signed when the signing secrets exist; otherwise they are published unsigned.
+# Builds the Windows installer and the Linux .deb and .rpm when a version tag is pushed
+# (v0.1.0, ...). The installer, exe and DLL are signed when the signing secrets exist; otherwise
+# they are published unsigned.
 on:
   push:
     tags: ["v*"]
@@ -62,3 +63,53 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: installer/out/RtspCam-*-setup.exe
+
+  linux-packages:
+    # The oldest supported runner, so the binary's glibc requirement (2.35) suits Ubuntu 22.04
+    # and Debian 12 as well as newer releases.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: rustup update --no-self-update stable && rustup toolchain install && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+          [ "v$v" = "${{ github.ref_name }}" ] || { echo "tag ${{ github.ref_name }} does not match Cargo.toml version $v"; exit 1; }
+
+      # Slint's font lookup (fontique) links fontconfig.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev
+
+      - name: Install packaging tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Build
+        run: cargo build --workspace --release --locked
+
+      - name: Build packages
+        # Stripped: the release profile's line tables add about 90 MB to the app.
+        run: |
+          strip target/release/rtspcam target/release/rtspcam-cli
+          cargo deb -p rtspcam-app --no-build
+          cargo generate-rpm -p crates/rtspcam-app
+          mkdir -p target/packages
+          cp target/debian/*.deb target/generate-rpm/*.rpm target/packages/
+          ls -l target/packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RtspCam-linux-packages
+          if-no-files-found: error
+          path: target/packages/*
+
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/packages/*

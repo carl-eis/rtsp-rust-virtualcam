@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=RTSP Cam
+GenericName=Virtual camera
+Comment=Use RTSP cameras as webcams in other apps
+Exec=rtspcam
+Icon=rtspcam
+Terminal=false
+Categories=AudioVideo;Video;
+Keywords=webcam;camera;rtsp;onvif;virtual;
+StartupWMClass=rtspcam

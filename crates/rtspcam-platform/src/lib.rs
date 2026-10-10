@@ -6,7 +6,7 @@
 //!
 //! | Trait | Windows | Linux | macOS |
 //! |---|---|---|---|
-//! | [`VirtualCameraBackend`] | Media Foundation virtual cameras | not yet ([`UnsupportedCameras`]) | not yet ([`UnsupportedCameras`]) |
+//! | [`VirtualCameraBackend`] | Media Foundation virtual cameras | v4l2loopback | not yet ([`UnsupportedCameras`]) |
 //! | [`SecretStore`] | DPAPI | key in Secret Service | key in Keychain |
 //! | [`Autostart`] | HKCU `Run` key | XDG autostart entry | LaunchAgent |
 //! | [`SingleInstance`] | named mutex + event | lock file + Unix socket | lock file + Unix socket |
