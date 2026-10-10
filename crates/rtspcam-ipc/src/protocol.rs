@@ -37,11 +37,11 @@ pub enum PixelFormat {
     Nv12,
     /// B, G, R, X bytes per pixel, top-down, rows `width * 4` bytes.
     Rgb32,
-    /// Packed 4:2:2: Y0, U, Y1, V for each pair of pixels, rows `width * 2` bytes. For push
-    /// backends (v4l2loopback, CoreMediaIO); the Windows DLL never asks for it.
+    /// Packed 4:2:2: Y0, U, Y1, V for each pair of pixels, rows `width * 2` bytes (YUY2 on
+    /// Windows). Push backends (v4l2loopback, CoreMediaIO) and the Windows DLL ask for it.
     Yuyv,
     /// Planar 4:2:0: the Y plane, then U, then V, each chroma plane `width / 2` by
-    /// `height / 2`. For push backends, like `Yuyv`.
+    /// `height / 2`. Asked for by push backends and the Windows DLL, like `Yuyv`.
     I420,
 }
 

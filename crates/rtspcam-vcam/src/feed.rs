@@ -163,13 +163,20 @@ fn run(camera: Uuid, format: VideoFormat, shared: &Shared) {
 }
 
 fn receive(client: &mut FrameClient, format: VideoFormat, shared: &Shared) {
+    // The frame the newest one replaced. Once the delivery thread has let go of it (it holds a
+    // frame only while sending it), the next frame is copied into it instead of a new buffer.
+    let mut spare: Option<Arc<Vec<u8>>> = None;
     while !shared.stop.load(Ordering::SeqCst) {
         match client.read() {
             Ok(Message::Frame { header, data }) => {
                 // Frames in another format can still be in the pipe after a format change.
                 if header.format == format {
-                    let frame = Arc::new(data.to_vec());
-                    set(shared, |s| s.frame = Some((frame, Instant::now())));
+                    let frame = copy_into(spare.take(), data);
+                    let mut previous = None;
+                    set(shared, |s| {
+                        previous = s.frame.replace((frame, Instant::now()))
+                    });
+                    spare = previous.map(|(frame, _)| frame);
                 }
             }
             Ok(Message::Status { status, message }) => set(shared, |s| {
@@ -185,5 +192,43 @@ fn receive(client: &mut FrameClient, format: VideoFormat, shared: &Shared) {
                 return;
             }
         }
+    }
+}
+
+/// `data` in a shared buffer: `spare`'s, if nothing else holds it any more, or a new one.
+fn copy_into(spare: Option<Arc<Vec<u8>>>, data: &[u8]) -> Arc<Vec<u8>> {
+    match spare {
+        Some(mut buffer) => match Arc::get_mut(&mut buffer) {
+            Some(bytes) => {
+                bytes.clear();
+                bytes.extend_from_slice(data);
+                buffer
+            }
+            None => Arc::new(data.to_vec()),
+        },
+        None => Arc::new(data.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reuses_the_spare_buffer_only_when_nobody_holds_it() {
+        let spare = Arc::new(vec![0u8; 16]);
+        let ptr = spare.as_ptr();
+        let reused = copy_into(Some(spare), &[1, 2, 3]);
+        assert_eq!(*reused, [1, 2, 3]);
+        assert_eq!(reused.as_ptr(), ptr, "the spare's allocation is kept");
+
+        let held = reused.clone();
+        let fresh = copy_into(Some(reused), &[4]);
+        assert_eq!(*fresh, [4]);
+        assert_eq!(
+            *held,
+            [1, 2, 3],
+            "a frame being delivered is never overwritten"
+        );
     }
 }
