@@ -45,6 +45,7 @@ Section numbers (§) refer to the headings inside each document.
 | 14 | [14-progress-phase-8.md](14-progress-phase-8.md) | Progress | Steps 8.0–8.3 of 08.1 | **Current** hardware decoding (D3D11, copy-back, fence), the setting, decoder swap without reconnect, size limits, the `bench` command and the CPU measurements before/after |
 | 15 | [15-obs-virtualcam-comparison.md](15-obs-virtualcam-comparison.md) | Review | Virtual cameras vs OBS Studio's (Windows, Linux, macOS) | **Current** missing features, low-hanging fixes (pacing timer, timestamps, YUY2), lessons for phase M |
 | 16 | [16-progress-issue-12.md](16-progress-issue-12.md) | Progress | Issue #12 (15 §4.1–4.3, 4.5) | **Current** high-resolution frame pacing in the DLL, even timestamps, YUY2/I420 on Windows, sample pool and feed buffer reuse, frame-gap measurements; the STREAMON check (15 §4.4) still needs a person (issue #17) |
+| 17 | [17-realtimewebcam-comparison.md](17-realtimewebcam-comparison.md) | Review | RTSP Cam vs RealTimeWebCam (Windows virtual camera, latency) | **Current** latency cap with catch-up to live, opt-in persistent camera, lost request token in the DLL, delivery on frame arrival, suggested next steps |
 
 ### Which documents are current
 
