@@ -36,3 +36,9 @@ pub(crate) fn process_memory() -> Option<(usize, usize)> {
     ok.is_ok()
         .then_some((counters.WorkingSetSize, counters.PrivateUsage))
 }
+
+/// Never resolves: a windowed program hears about logoff and shutdown through its window, and
+/// the cameras go with the process anyway (session lifetime).
+pub(crate) async fn termination_requested() -> io::Result<()> {
+    std::future::pending().await
+}

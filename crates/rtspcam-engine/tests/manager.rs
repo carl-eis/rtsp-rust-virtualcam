@@ -275,16 +275,26 @@ fn edits_rebuild_only_what_changed_and_removals_remove() {
             .then_some(())
     });
     let log = backend.log();
-    assert!(log.contains(&format!("remove {a_id}")), "{log:?}");
+    // An edit re-creates the camera in place: removing it first would let Linux put it on
+    // another device while an app still reads the old one.
     assert!(
-        !log.contains(&format!("remove {b_id}")),
+        !log.contains(&format!("remove {a_id}")),
+        "A was removed instead of re-created: {log:?}"
+    );
+    assert!(
+        !log.contains(&format!("remove {b_id}"))
+            && log.iter().filter(|l| *l == "create B 1280x720@30").count() == 1,
         "B was touched: {log:?}"
     );
 
     m.apply(&config(vec![b]));
     wait(Duration::from_secs(5), || {
-        m.status(a_id).is_none().then_some(())
+        backend
+            .log()
+            .contains(&format!("remove {a_id}"))
+            .then_some(())
     });
+    assert!(m.status(a_id).is_none());
     assert!(m.status(b_id).is_some());
     m.shutdown(Duration::from_secs(5));
 }

@@ -11,7 +11,8 @@
 //!
 //! [`CameraManager::apply`] never blocks: it hands the new configuration to a task that works
 //! out what changed and does the slow parts (creating cameras can take a second) in order.
-//! Streams that changed are rebuilt from scratch; the rest are left alone.
+//! Streams that changed are rebuilt from scratch, except that their virtual camera is re-created
+//! in place rather than removed and added (an app using it keeps it); the rest are left alone.
 //!
 //! On-demand streams connect only while an app uses the webcam or a [`Preview`] is open, and
 //! disconnect [`idle_grace`](ManagerOptions::idle_grace) after the last one leaves.
@@ -487,8 +488,16 @@ async fn reconcile(shared: &Arc<Shared>, config: &Config) {
         ids.iter().filter_map(|id| cameras.remove(id)).collect()
     };
     for camera in stale {
-        tracing::info!(id = %camera.state.id, name = %camera.state.name, "removing camera");
-        remove_camera(shared, camera).await;
+        // An edited stream keeps its virtual camera: the backend re-creates it in place when
+        // the stream is added again below, so an app using it (a call) stays on the same
+        // device. Removing it first would let Linux move it to another device.
+        let edited = wanted.iter().any(|s| s.id == camera.state.id);
+        if edited {
+            tracing::info!(id = %camera.state.id, name = %camera.state.name, "rebuilding camera");
+        } else {
+            tracing::info!(id = %camera.state.id, name = %camera.state.name, "removing camera");
+        }
+        remove_camera(shared, camera, !edited).await;
     }
 
     // Add what is new.
@@ -505,15 +514,18 @@ async fn reconcile(shared: &Arc<Shared>, config: &Config) {
     (shared.options.on_change)();
 }
 
-async fn remove_camera(shared: &Arc<Shared>, camera: Camera) {
+/// Stops a camera's pipeline, and removes its virtual camera when `remove_vcam`.
+async fn remove_camera(shared: &Arc<Shared>, camera: Camera, remove_vcam: bool) {
     camera.supervisor.abort();
     camera.state.set_bus(None);
     if let Some(pipeline) = camera.state.take_pipeline() {
         let _ = tokio::task::spawn_blocking(move || pipeline.stop()).await;
     }
-    let backend = shared.backend.clone();
-    let id = camera.state.id;
-    let _ = tokio::task::spawn_blocking(move || backend.remove(id)).await;
+    if remove_vcam {
+        let backend = shared.backend.clone();
+        let id = camera.state.id;
+        let _ = tokio::task::spawn_blocking(move || backend.remove(id)).await;
+    }
     (shared.options.on_change)();
 }
 

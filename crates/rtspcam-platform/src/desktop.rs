@@ -21,3 +21,10 @@ pub fn attach_parent_console() {
 pub fn process_memory() -> Option<(usize, usize)> {
     os::process_memory()
 }
+
+/// Resolves when the system asks the process to end, other than Ctrl+C: SIGTERM (logout,
+/// shutdown, `kill`) or SIGHUP on Linux and macOS. Never on Windows. Call it inside a tokio
+/// runtime; the signals are caught from the first poll on, so start waiting early.
+pub async fn termination_requested() -> io::Result<()> {
+    os::termination_requested().await
+}
