@@ -4,10 +4,10 @@ The entry point for the documentation folder. Start here, read the documents mar
 **current** for the state of the project, and use the jump tables to go straight to a topic.
 Section numbers (§) refer to the headings inside each document.
 
-## 1. Where the project stands (as of 2026-10-10, v1.3.0 plus `feat/performance`)
+## 1. Where the project stands (as of 2026-10-10, v1.4.0)
 
 - **Windows:** plan phases 0–7 are built. Phase 8's performance part is built
-  ([14](14-progress-phase-8.md), on `feat/performance`): D3D11 hardware decoding with a
+  ([14](14-progress-phase-8.md), merged in PR #8): D3D11 hardware decoding with a
   "Use hardware decoding" setting, GPU downscaling to what apps need, a faster CPU scaler, and
   the `bench` command; a 1080p camera now costs about 5 % of one core instead of 30–90 %. The
   rest of phase 8 (soak, compatibility matrix, fuzzing, crash reports) has not started.
