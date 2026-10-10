@@ -274,7 +274,9 @@ Everything lives in one JSON file, `config.json`, in the per-user config folder:
 ```
 
 - Every field is optional and has a default. Unknown fields are kept when the file is saved.
-  `start_with_windows` is the start-at-login setting on every OS.
+  `start_with_windows` is the start-at-login setting on every OS. `theme` is `"system"`
+  (default: follow the OS's light or dark mode), `"light"` or `"dark"`; the **Dark mode** /
+  **Light mode** button and **Settings** change it.
 - Passwords are encrypted. Windows: DPAPI (current user only), stored as `dpapi:...`. Linux and
   macOS: with a key kept in Secret Service or the Keychain (`keyring:...`), or, if neither is
   available, in a `secret.key` file next to the config that only you can read (`keyfile:...`).

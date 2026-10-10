@@ -23,7 +23,7 @@ pub mod paths;
 pub mod secret;
 
 pub use config::{
-    AppSettings, Config, FitMode, LogLevel, OutputFormat, Picture, Protocol, StreamConfig,
+    AppSettings, Config, FitMode, LogLevel, OutputFormat, Picture, Protocol, StreamConfig, Theme,
     Transport,
 };
 pub use error::{ConfigError, SecretError};

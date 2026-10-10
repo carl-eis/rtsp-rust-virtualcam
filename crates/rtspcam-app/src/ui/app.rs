@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use rtspcam_core::config::{ConfigStore, StreamConfig};
 use rtspcam_core::constants::APP_DISPLAY_NAME;
-use rtspcam_core::{Config, paths};
+use rtspcam_core::{Config, Theme, paths};
 use rtspcam_engine::{Activity, CameraManager, CameraStatus, VcamState};
 use rtspcam_pipeline::StreamState;
 use rtspcam_platform::{Autostart, InstanceLock};
@@ -20,7 +20,7 @@ use slint::{
 use uuid::Uuid;
 
 use super::core::Core;
-use super::generated::{AppTray, MainWindow};
+use super::generated::{AppTray, MainWindow, Theme as UiTheme};
 use super::preview::PreviewFeed;
 use super::{discover_dialog, files, message, picture_dialog, settings_dialog, stream_dialog};
 
@@ -179,6 +179,15 @@ fn show_window(ui: &MainWindow) {
     window.with_winit_window(|w| w.focus_window());
 }
 
+/// Whether the OS is in dark mode; `None` before the window first opens, or when the OS
+/// doesn't say.
+fn os_dark(ui: &MainWindow) -> Option<bool> {
+    ui.window()
+        .with_winit_window(|w| w.theme())
+        .flatten()
+        .map(|theme| theme == slint::winit_030::winit::window::Theme::Dark)
+}
+
 impl App {
     pub(crate) fn ui(&self) -> Option<MainWindow> {
         self.ui.upgrade()
@@ -203,6 +212,7 @@ impl App {
         on!(on_remove_stream, remove_stream);
         on!(on_toggle_stream, toggle_stream);
         on!(on_open_settings, open_settings);
+        on!(on_toggle_theme, toggle_theme);
         on!(on_quit, quit);
         on!(on_open_logs, open_logs);
         on!(on_about, about);
@@ -331,6 +341,11 @@ impl App {
         let keep = self.selected_id();
         {
             let config = self.core.config.borrow();
+            ui.set_theme(match config.settings.theme {
+                Theme::System => UiTheme::System,
+                Theme::Light => UiTheme::Light,
+                Theme::Dark => UiTheme::Dark,
+            });
             let rows: Vec<ModelRc<StandardListViewItem>> = config
                 .streams
                 .iter()
@@ -573,6 +588,9 @@ impl App {
             let _ = ui.hide();
             self.sync_preview();
         }
+        if let Some(dark) = os_dark(&ui) {
+            ui.set_os_dark(dark);
+        }
         // The preview is scaled to the box's size in physical pixels.
         let scale = window.scale_factor();
         self.preview.set_target(
@@ -749,6 +767,21 @@ impl App {
 
     fn open_settings(self: &Rc<Self>) {
         settings_dialog::open(self);
+    }
+
+    /// Switches between light and dark. Picking what the OS uses follows the OS again.
+    fn toggle_theme(self: &Rc<Self>) {
+        let Some(ui) = self.ui() else { return };
+        let dark = !ui.get_dark();
+        let mut config = self.core.config.borrow().clone();
+        config.settings.theme = if os_dark(&ui) == Some(dark) {
+            Theme::System
+        } else if dark {
+            Theme::Dark
+        } else {
+            Theme::Light
+        };
+        self.save(config);
     }
 
     /// Saves and applies a changed config; shows the error if saving failed.
