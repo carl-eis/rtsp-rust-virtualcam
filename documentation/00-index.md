@@ -4,7 +4,7 @@ The entry point for the documentation folder. Start here, read the documents mar
 **current** for the state of the project, and use the jump tables to go straight to a topic.
 Section numbers (§) refer to the headings inside each document.
 
-## 1. Where the project stands (as of 2026-10-10, v1.5.0)
+## 1. Where the project stands (as of 2026-10-10, v1.6.0)
 
 - **Windows:** plan phases 0–7 are built. Phase 8's performance part is built
   ([14](14-progress-phase-8.md), merged in PR #8): D3D11 hardware decoding with a
