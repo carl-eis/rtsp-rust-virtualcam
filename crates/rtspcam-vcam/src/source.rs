@@ -32,7 +32,8 @@ use crate::stream::{self, MediaStream, queue_time_event};
 /// Our own attribute (string): the camera id, for in-process tests and tools that create the
 /// source without a virtual camera device. Frame Server uses the device property instead.
 pub const RTSPCAM_ATTR_CAMERA_ID: GUID = GUID::from_u128(0xc5464fce_84dc_4420_8bc5_53830a558a46);
-pub(crate) const RTSPCAM_ATTR_PREFERRED_FORMAT: GUID =
+/// Our own attribute (string): the stream's preferred output, `"<width>x<height>@<fps>"`.
+pub const RTSPCAM_ATTR_PREFERRED_FORMAT: GUID =
     GUID::from_u128(0x5d1b2c3a_6e7f_4a80_9b1c_2d3e4f506172);
 
 #[implement(IMFMediaSourceEx, IMFGetService, IKsControl)]

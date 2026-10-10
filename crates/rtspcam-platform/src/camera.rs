@@ -80,6 +80,19 @@ pub trait VirtualCameraBackend: Send + Sync + 'static {
         runtime: &Handle,
     ) -> Result<(), CameraError>;
 
+    /// Re-creates a camera that [`create`](Self::create) made, with a new
+    /// [`CameraSpec::preferred`] format (a "Source" stream's picture size became known), for
+    /// the same `frames`. Backends whose frame delivery doesn't depend on the format keep it
+    /// running and only re-make the camera; the default re-creates everything.
+    fn reformat(
+        &self,
+        spec: &CameraSpec,
+        frames: Arc<dyn FrameSource>,
+        runtime: &Handle,
+    ) -> Result<(), CameraError> {
+        self.create(spec, frames, runtime)
+    }
+
     /// Removes one camera and stops its frame delivery. Unknown ids are ignored.
     fn remove(&self, id: Uuid);
 

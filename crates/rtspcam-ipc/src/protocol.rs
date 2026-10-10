@@ -22,9 +22,11 @@ pub const MAGIC: [u8; 4] = *b"RCAM";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 16;
 
-pub const MAX_WIDTH: u32 = 4096;
-pub const MAX_HEIGHT: u32 = 2160;
+/// The largest picture: the config's limit for "Source" outputs.
+pub const MAX_WIDTH: u32 = rtspcam_core::OutputFormat::MAX_SIZE.0;
+pub const MAX_HEIGHT: u32 = rtspcam_core::OutputFormat::MAX_SIZE.1;
 pub const MAX_FPS: u32 = 120;
+const _: () = assert!(MAX_FPS >= rtspcam_core::OutputFormat::FRAME_RATES[0]);
 const FRAME_HEADER_LEN: usize = 32;
 const MAX_STATUS_MESSAGE: usize = 1024;
 /// Largest body any message may have: a 4096x2160 RGB32 frame plus its header.

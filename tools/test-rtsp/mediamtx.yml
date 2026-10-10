@@ -8,6 +8,8 @@
 #   rtsp://127.0.0.1:8554/h265-720p    H.265 1280x720 30 fps
 #   rtsp://127.0.0.1:8554/h265-1080p   H.265 1920x1080 30 fps (encoded only while read)
 #   rtsp://127.0.0.1:8554/h264-2160p   H.264 3840x2160 30 fps (encoded only while read)
+#   rtsp://127.0.0.1:8554/h264-1080p60 H.264 1920x1080 60 fps (encoded only while read)
+#   rtsp://127.0.0.1:8554/h264-4x3     H.264 1440x1080 25 fps (encoded only while read)
 #   rtsp://127.0.0.1:8554/mjpeg-720p   MJPEG 1280x720 15 fps
 #   rtsp://127.0.0.1:8554/secure       H.264 1280x720 30 fps, user "rtspcam" / password "rtspcam-test"
 
@@ -44,6 +46,10 @@ authInternalUsers:
         path: h265-1080p
       - action: read
         path: h264-2160p
+      - action: read
+        path: h264-1080p60
+      - action: read
+        path: h264-4x3
       - action: read
         path: mjpeg-720p
   # The secure stream needs credentials (Basic/Digest auth).
@@ -98,6 +104,22 @@ paths:
       ffmpeg -hide_banner -loglevel error -re
       -f lavfi -i testsrc2=size=3840x2160:rate=30
       -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -pix_fmt yuv420p -g 30 -b:v 12M
+      -f rtsp -rtsp_transport tcp -pkt_size 1200 rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  # 60 fps output (GitHub issue #13).
+  h264-1080p60:
+    runOnDemand: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1920x1080:rate=60
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v high -pix_fmt yuv420p -g 60 -b:v 6M
+      -f rtsp -rtsp_transport tcp -pkt_size 1200 rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+
+  # A 4:3 picture that isn't one of the sizes cameras offer, for the "Source" output.
+  h264-4x3:
+    runOnDemand: >-
+      ffmpeg -hide_banner -loglevel error -re
+      -f lavfi -i testsrc2=size=1440x1080:rate=25
+      -c:v libx264 -preset ultrafast -tune zerolatency -profile:v main -pix_fmt yuv420p -g 25 -b:v 3M
       -f rtsp -rtsp_transport tcp -pkt_size 1200 rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
 
   # RTP/JPEG (RFC 2435) limits frames to 2040x2040, so MJPEG stays at 720p. It also needs the

@@ -10,6 +10,8 @@ test-pattern streams, so you can develop without a real IP camera.
 | `rtsp://127.0.0.1:8554/h265-720p` | H.265 | 1280×720 @ 30 | none |
 | `rtsp://127.0.0.1:8554/h265-1080p` | H.265 | 1920×1080 @ 30 | none; encoded only while read |
 | `rtsp://127.0.0.1:8554/h264-2160p` | H.264 High | 3840×2160 @ 30 | none; encoded only while read (takes a few CPU cores) |
+| `rtsp://127.0.0.1:8554/h264-1080p60` | H.264 High | 1920×1080 @ 60 | none; encoded only while read |
+| `rtsp://127.0.0.1:8554/h264-4x3` | H.264 Main | 1440×1080 @ 25 | none; encoded only while read (a 4:3 size for the "Source" output) |
 | `rtsp://127.0.0.1:8554/mjpeg-720p` | MJPEG (RTP/JPEG) | 1280×720 @ 15 | none (see known issue) |
 | `rtsp://127.0.0.1:8554/secure` | H.264 | 1280×720 @ 30 | `rtspcam` / `rtspcam-test` |
 

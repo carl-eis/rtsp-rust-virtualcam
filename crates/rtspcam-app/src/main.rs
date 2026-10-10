@@ -19,7 +19,7 @@ use rtspcam_core::config::ConfigStore;
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::logging::{self, LogOptions};
 use rtspcam_core::paths;
-use rtspcam_engine::{CameraManager, ManagerOptions};
+use rtspcam_engine::{CameraManager, ManagerOptions, SOURCE_SIZES_FILE};
 use rtspcam_platform::{CameraError, Instance};
 
 /// Quitting must end the process within this long, whatever is stuck.
@@ -93,7 +93,12 @@ fn run() -> anyhow::Result<ExitCode> {
         }
         _ => true,
     };
-    let manager = CameraManager::start(backend, ManagerOptions::default())?;
+    let options = ManagerOptions {
+        // Next to config.json.
+        source_sizes: store.path().parent().map(|dir| dir.join(SOURCE_SIZES_FILE)),
+        ..ManagerOptions::default()
+    };
+    let manager = CameraManager::start(backend, options)?;
     if headless {
         run_headless(&store, &config, manager)?;
         return Ok(ExitCode::SUCCESS);

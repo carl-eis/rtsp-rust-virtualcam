@@ -4779,6 +4779,8 @@ dependencies = [
  "rtspcam-ipc",
  "rtspcam-pipeline",
  "rtspcam-platform",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "url",

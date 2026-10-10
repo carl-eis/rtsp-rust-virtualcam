@@ -49,12 +49,31 @@ const LATE_POLL: Duration = Duration::from_millis(3);
 /// Serves `source` to every client `listener` accepts, until the task is dropped (which also
 /// ends every connected client) or accepting fails.
 pub async fn serve(
-    mut listener: Box<dyn FrameListener>,
+    listener: Box<dyn FrameListener>,
     source: Arc<dyn FrameSource>,
 ) -> io::Result<()> {
+    serve_until(listener, source, std::future::pending()).await
+}
+
+/// [`serve`], until `stop` finishes too. Then it ends every connected client, waits for their
+/// tasks to finish and drops the listener before returning, so when it returns nothing holds
+/// the endpoint any more and it can be served again at once. (Dropping a [`serve`] task, or
+/// aborting it, closes them a little later on another thread instead.)
+pub async fn serve_until(
+    mut listener: Box<dyn FrameListener>,
+    source: Arc<dyn FrameSource>,
+    stop: impl Future<Output = ()> + Send,
+) -> io::Result<()> {
     let mut clients = JoinSet::new();
-    loop {
-        let connection = listener.accept().await?;
+    let mut stop = std::pin::pin!(stop);
+    let result = loop {
+        let connection = tokio::select! {
+            () = &mut stop => break Ok(()),
+            c = listener.accept() => match c {
+                Ok(c) => c,
+                Err(e) => break Err(e),
+            },
+        };
         let source = source.clone();
         while clients.try_join_next().is_some() {}
         clients.spawn(async move {
@@ -62,7 +81,10 @@ pub async fn serve(
                 tracing::debug!(error = %e, "camera client ended");
             }
         });
-    }
+    };
+    clients.shutdown().await;
+    drop(listener);
+    result
 }
 
 async fn serve_client(
@@ -79,10 +101,25 @@ async fn serve_client(
         };
     tracing::info!(pid, %format, "camera client connected");
     source.client_connected(format);
-    let result = stream_to(connection, format, &*source).await;
-    source.client_disconnected();
-    tracing::info!(pid, "camera client disconnected");
-    result
+    // Also when the server stops and cancels this task mid-stream.
+    let _connected = Connected {
+        source: &*source,
+        pid,
+    };
+    stream_to(connection, format, &*source).await
+}
+
+/// Tells the source a client left when dropped.
+struct Connected<'a> {
+    source: &'a dyn FrameSource,
+    pid: u32,
+}
+
+impl Drop for Connected<'_> {
+    fn drop(&mut self) {
+        self.source.client_disconnected();
+        tracing::info!(pid = self.pid, "camera client disconnected");
+    }
 }
 
 async fn stream_to(

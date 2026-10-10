@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use rtspcam_core::config::{ConfigStore, StreamConfig};
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::{Config, Theme, paths};
-use rtspcam_engine::{Activity, CameraManager, CameraStatus, VcamState};
+use rtspcam_engine::{
+    Activity, CameraManager, CameraStatus, VcamState, frame_rate_note, output_summary,
+};
 use rtspcam_pipeline::StreamState;
 use rtspcam_platform::{Autostart, InstanceLock};
 use slint::winit_030::WinitWindowAccessor as _;
@@ -500,10 +502,8 @@ impl App {
             s.name.clone(),
             s.url(),
             format!(
-                "Output: {}x{} @ {} fps, {}",
-                s.output.width,
-                s.output.height,
-                s.output.fps,
+                "Output: {}, {}",
+                output_summary(&s.output, status.as_ref().map(|st| st.offered)),
                 if s.on_demand {
                     "on demand"
                 } else {
@@ -528,6 +528,7 @@ impl App {
                         stats.latency.as_millis(),
                         stats.decoder
                     ));
+                    lines.extend(frame_rate_note(stats.fps, s.output.fps));
                 }
                 if let Some(hint) = st.activity.hint() {
                     lines.push(hint);

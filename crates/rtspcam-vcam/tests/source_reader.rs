@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use rtspcam_ipc::server::{FrameSource, serve};
 use rtspcam_ipc::{StreamStatus, VideoFormat};
-use rtspcam_vcam::{RTSPCAM_ATTR_CAMERA_ID, create_activate};
+use rtspcam_vcam::{RTSPCAM_ATTR_CAMERA_ID, RTSPCAM_ATTR_PREFERRED_FORMAT, create_activate};
 use uuid::Uuid;
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaSource, IMFSourceReader, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_SUBTYPE,
@@ -30,12 +30,22 @@ fn init() {
 }
 
 fn open(camera: Uuid) -> (IMFMediaSource, IMFSourceReader) {
+    open_preferring(camera, None)
+}
+
+/// [`open`], for a stream whose configured output is `preferred` (`"<w>x<h>@<fps>"`).
+fn open_preferring(camera: Uuid, preferred: Option<&str>) -> (IMFMediaSource, IMFSourceReader) {
     let activate = create_activate().unwrap();
     // SAFETY: valid objects; plain COM calls.
     unsafe {
         activate
             .SetString(&RTSPCAM_ATTR_CAMERA_ID, &HSTRING::from(camera.to_string()))
             .unwrap();
+        if let Some(format) = preferred {
+            activate
+                .SetString(&RTSPCAM_ATTR_PREFERRED_FORMAT, &HSTRING::from(format))
+                .unwrap();
+        }
         let source: IMFMediaSource = activate.ActivateObject().unwrap();
         let reader = MFCreateSourceReaderFromMediaSource(&source, None).unwrap();
         (source, reader)
@@ -121,25 +131,52 @@ impl FrameSource for Counter {
     }
 }
 
-#[test]
-fn offers_twenty_four_formats_nv12_720p30_first() {
-    init();
-    let (source, reader) = open(Uuid::new_v4());
+/// How many media types the reader offers, and the first one's subtype, size and rate.
+fn native_types(reader: &IMFSourceReader) -> (u32, windows_core::GUID, u64, u64) {
     // SAFETY: valid reader.
     unsafe {
         let mut count = 0;
         while reader.GetNativeMediaType(STREAM, count).is_ok() {
             count += 1;
         }
-        assert_eq!(count, 24);
         let first = reader.GetNativeMediaType(STREAM, 0).unwrap();
-        assert_eq!(first.GetGUID(&MF_MT_SUBTYPE).unwrap(), MFVideoFormat_NV12);
-        assert_eq!(
+        (
+            count,
+            first.GetGUID(&MF_MT_SUBTYPE).unwrap(),
             first.GetUINT64(&MF_MT_FRAME_SIZE).unwrap(),
-            (1280u64 << 32) | 720
-        );
-        source.Shutdown().unwrap();
+            first.GetUINT64(&MF_MT_FRAME_RATE).unwrap(),
+        )
     }
+}
+
+#[test]
+fn offers_thirty_six_formats_nv12_720p30_first() {
+    init();
+    let (source, reader) = open(Uuid::new_v4());
+    assert_eq!(
+        native_types(&reader),
+        (36, MFVideoFormat_NV12, (1280 << 32) | 720, (30 << 32) | 1)
+    );
+    // SAFETY: valid source.
+    unsafe { source.Shutdown().unwrap() };
+}
+
+#[test]
+fn offers_a_source_size_first_besides_the_usual_ones() {
+    init();
+    let (source, reader) = open_preferring(Uuid::new_v4(), Some("2560x1440@60"));
+    assert_eq!(
+        native_types(&reader),
+        (48, MFVideoFormat_NV12, (2560 << 32) | 1440, (60 << 32) | 1)
+    );
+    // The camera's own size can be read, in another pixel format and rate too.
+    set_format(&reader, MFVideoFormat_YUY2, 2560, 1440, 30);
+    let len = (0..30)
+        .map(|_| read(&reader, 1).pop().unwrap().0.len())
+        .find(|&len| len == 2560 * 1440 * 2);
+    assert!(len.is_some(), "no 2560x1440 YUY2 sample");
+    // SAFETY: valid source.
+    unsafe { source.Shutdown().unwrap() };
 }
 
 #[test]
@@ -206,18 +243,30 @@ fn placeholder_in_yuy2_and_i420() {
 /// see the numbers.
 #[test]
 fn frame_gaps_are_even() {
+    frame_gaps_are_even_at(30);
+}
+
+/// 16.7 ms per frame: steady only with the high-resolution timer (a normal timer rounds waits to
+/// the 15.6 ms system tick).
+#[test]
+fn frame_gaps_are_even_at_60_fps() {
+    frame_gaps_are_even_at(60);
+}
+
+fn frame_gaps_are_even_at(fps: u32) {
     init();
     let (source, reader) = open(Uuid::new_v4());
-    read(&reader, 5); // warm up
-    let samples = read_timed(&reader, 90);
-    let interval = Duration::from_secs(1) / 30;
+    set_format(&reader, MFVideoFormat_NV12, 1280, 720, fps);
+    read(&reader, 5); // warm up (and past the format change)
+    let samples = read_timed(&reader, 3 * fps as usize);
+    let interval = Duration::from_secs(1) / fps;
     let ms = |d: Duration| d.as_secs_f64() * 1000.0;
     let gaps: Vec<f64> = samples.windows(2).map(|w| ms(w[1].2 - w[0].2)).collect();
     let deviations: Vec<f64> = gaps.iter().map(|g| (g - ms(interval)).abs()).collect();
     let worst = deviations.iter().copied().fold(0.0, f64::max);
     let within_2ms = deviations.iter().filter(|&&d| d <= 2.0).count();
     eprintln!(
-        "frame gaps over {} frames: mean {:.2} ms, min {:.2} ms, max {:.2} ms, \
+        "{fps} fps, frame gaps over {} frames: mean {:.2} ms, min {:.2} ms, max {:.2} ms, \
          worst deviation {worst:.2} ms, within 2 ms of the interval: {within_2ms}/{}",
         gaps.len(),
         gaps.iter().sum::<f64>() / gaps.len() as f64,
@@ -225,12 +274,13 @@ fn frame_gaps_are_even() {
         gaps.iter().copied().fold(0.0, f64::max),
         gaps.len()
     );
-    // The timestamps step by one interval (333 333 or 333 334 ticks of 100 ns, so they don't
-    // drift), whatever the wake-up jitter.
+    // The timestamps step by one interval (at 30 fps 333 333 or 333 334 ticks of 100 ns, so
+    // they don't drift), whatever the wake-up jitter.
+    let ticks = 10_000_000 / i64::from(fps);
     for w in samples.windows(2) {
         let step = w[1].1 - w[0].1;
         assert!(
-            (333_333..=333_334).contains(&step),
+            (ticks..=ticks + 1).contains(&step),
             "uneven timestamps: {step}"
         );
     }

@@ -1,7 +1,9 @@
-//! The media types every camera offers: NV12, YUY2, I420 and RGB32 at 1080p, 720p and 480p, 30
-//! and 15 fps. NV12 comes first: it is what the app decodes to, so it costs no conversion. YUY2
-//! is what most USB webcams offer, and some apps look for it first.
+//! The media types every camera offers: NV12, YUY2, I420 and RGB32 at 1080p, 720p and 480p, 30,
+//! 15 and 60 fps, plus the camera's own size when its stream is set to "Source". NV12 comes
+//! first: it is what the app decodes to, so it costs no conversion. YUY2 is what most USB
+//! webcams offer, and some apps look for it first.
 
+use rtspcam_ipc::protocol::{MAX_HEIGHT, MAX_WIDTH};
 use rtspcam_ipc::{PixelFormat, VideoFormat};
 use windows::Win32::Media::MediaFoundation::{
     IMFMediaType, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE,
@@ -12,11 +14,23 @@ use windows::Win32::Media::MediaFoundation::{
 };
 
 const SIZES: [(u32, u32); 3] = [(1280, 720), (1920, 1080), (640, 480)];
-const RATES: [u32; 2] = [30, 15];
+const RATES: [u32; 3] = [30, 15, 60];
 
 /// All formats, best first. `preferred` (the stream's configured output) goes to the front,
-/// since many apps simply take the first one.
+/// since many apps simply take the first one. A preferred size that isn't one of the usual
+/// ones (a "Source" output: the camera's own size) is offered as well, in every pixel format
+/// and rate, if it is even and within the IPC limits.
 pub(crate) fn advertised(preferred: Option<(u32, u32, u32)>) -> Vec<VideoFormat> {
+    let mut sizes = SIZES.to_vec();
+    if let Some((w, h, _)) = preferred
+        && !sizes.contains(&(w, h))
+        && w % 2 == 0
+        && h % 2 == 0
+        && (2..=MAX_WIDTH).contains(&w)
+        && (2..=MAX_HEIGHT).contains(&h)
+    {
+        sizes.insert(0, (w, h));
+    }
     let mut all = Vec::new();
     for pixel_format in [
         PixelFormat::Nv12,
@@ -25,7 +39,7 @@ pub(crate) fn advertised(preferred: Option<(u32, u32, u32)>) -> Vec<VideoFormat>
         PixelFormat::Rgb32,
     ] {
         for fps in RATES {
-            for (width, height) in SIZES {
+            for &(width, height) in &sizes {
                 all.push(VideoFormat {
                     width,
                     height,
@@ -114,9 +128,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn twenty_four_formats_nv12_720p30_first() {
+    fn thirty_six_formats_nv12_720p30_first() {
+        // 4 pixel formats x 3 rates x 3 sizes.
         let all = advertised(None);
-        assert_eq!(all.len(), 24);
+        assert_eq!(all.len(), 36);
         assert_eq!(
             all[0],
             VideoFormat {
@@ -133,9 +148,49 @@ mod tests {
         let all = advertised(Some((1920, 1080, 15)));
         assert_eq!((all[0].width, all[0].height, all[0].fps), (1920, 1080, 15));
         assert_eq!(all[0].pixel_format, PixelFormat::Nv12);
-        assert_eq!(all.len(), 24);
-        // Unknown preferences are ignored.
+        assert_eq!(all.len(), 36);
+        let all = advertised(Some((640, 480, 60)));
+        assert_eq!((all[0].width, all[0].height, all[0].fps), (640, 480, 60));
+        // Sizes that can't be sent are ignored.
         assert_eq!(advertised(Some((1, 1, 1))), advertised(None));
+        assert_eq!(advertised(Some((1281, 720, 30))), advertised(None));
+        assert_eq!(advertised(Some((4098, 2160, 30))), advertised(None));
+    }
+
+    #[test]
+    fn the_source_size_is_offered_besides_the_usual_ones() {
+        let all = advertised(Some((2560, 1440, 60)));
+        assert_eq!(all.len(), 48, "4 pixel formats x 3 rates x 4 sizes");
+        assert_eq!(
+            all[0],
+            VideoFormat {
+                width: 2560,
+                height: 1440,
+                fps: 60,
+                pixel_format: PixelFormat::Nv12
+            }
+        );
+        for pixel_format in [PixelFormat::Yuyv, PixelFormat::I420, PixelFormat::Rgb32] {
+            for fps in RATES {
+                assert!(all.contains(&VideoFormat {
+                    width: 2560,
+                    height: 1440,
+                    fps,
+                    pixel_format
+                }));
+            }
+        }
+        // The usual sizes are all still there.
+        for (w, h) in SIZES {
+            assert_eq!(
+                all.iter().filter(|f| (f.width, f.height) == (w, h)).count(),
+                12
+            );
+        }
+        // The largest picture the pipe carries.
+        let all = advertised(Some((4096, 2160, 30)));
+        assert_eq!(all.len(), 48);
+        assert_eq!((all[0].width, all[0].height), (4096, 2160));
     }
 
     #[test]
@@ -151,11 +206,13 @@ mod tests {
                 all.iter()
                     .filter(|f| f.pixel_format == pixel_format)
                     .count(),
-                6
+                9
             );
         }
         // All NV12 types come before any other.
-        assert!(all[..6].iter().all(|f| f.pixel_format == PixelFormat::Nv12));
+        assert!(all[..9].iter().all(|f| f.pixel_format == PixelFormat::Nv12));
+        let mut all = all;
+        all.extend(advertised(Some((2560, 1440, 60))));
         for f in &all {
             let t = media_type(f).unwrap();
             assert_eq!(format_of(&t), Some(*f));

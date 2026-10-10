@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use rtspcam_core::Config;
 use rtspcam_core::config::{Protocol, StreamConfig};
+use rtspcam_core::{Config, OutputFormat};
 use rtspcam_engine::{Activity, CameraManager, CameraStatus, ManagerOptions, VcamState};
 use rtspcam_ipc::client::FrameClient;
 use rtspcam_ipc::server::serve;
@@ -93,6 +93,21 @@ impl VirtualCameraBackend for FakeBackend {
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    fn reformat(
+        &self,
+        spec: &CameraSpec,
+        frames: Arc<dyn FrameSource>,
+        _runtime: &Handle,
+    ) -> Result<(), CameraError> {
+        let (w, h, fps) = spec.preferred;
+        self.push(format!("reformat {} {w}x{h}@{fps}", spec.name));
+        self.sources
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(spec.id, frames);
+        Ok(())
     }
 
     fn remove(&self, id: Uuid) {
@@ -526,5 +541,116 @@ fn an_unreachable_camera_shows_no_signal_and_keeps_the_camera() {
     });
     assert!(!matches!(status.vcam, VcamState::Failed(_)), "{status:?}");
     assert!(status.activity.hint().is_some(), "{status:?}");
+    m.shutdown(Duration::from_secs(5));
+}
+
+fn manager_with_sizes(backend: &Arc<FakeBackend>, sizes: &std::path::Path) -> CameraManager {
+    let options = ManagerOptions {
+        idle_grace: Duration::from_millis(300),
+        source_sizes: Some(sizes.to_owned()),
+        ..ManagerOptions::default()
+    };
+    CameraManager::start(backend.clone(), options).expect("manager starts")
+}
+
+#[test]
+fn source_streams_offer_the_size_seen_last_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let sizes = dir.path().join(rtspcam_engine::SOURCE_SIZES_FILE);
+    let mut seen = StreamConfig::new("Seen", "192.0.2.10");
+    seen.output = OutputFormat::source(60);
+    let mut new = StreamConfig::new("New", "192.0.2.11");
+    new.output = OutputFormat::source(30);
+    std::fs::write(
+        &sizes,
+        format!(
+            r#"{{ "{}": [2560, 1440], "{}": [640, 480] }}"#,
+            seen.id,
+            Uuid::new_v4()
+        ),
+    )
+    .unwrap();
+    let (seen_id, new_id) = (seen.id, new.id);
+
+    let backend = Arc::new(FakeBackend::default());
+    let m = manager_with_sizes(&backend, &sizes);
+    m.apply(&config(vec![seen, new]));
+    wait(Duration::from_secs(5), || {
+        let ready = |id| m.status(id).is_some_and(|s| s.vcam == VcamState::Ready);
+        (ready(seen_id) && ready(new_id)).then_some(())
+    });
+    let mut log = backend.log();
+    log.sort();
+    // Never connected: the configured size until the camera's is known.
+    assert_eq!(log, ["create New 1920x1080@30", "create Seen 2560x1440@60"]);
+    assert_eq!(status_of(&m, seen_id).offered, (2560, 1440, 60));
+    m.shutdown(Duration::from_secs(5));
+    // Sizes of streams that are gone are forgotten.
+    let saved = std::fs::read_to_string(&sizes).unwrap();
+    assert!(saved.contains(&seen_id.to_string()), "{saved}");
+    assert_eq!(saved.matches('[').count(), 1, "{saved}");
+}
+
+#[test]
+fn a_source_stream_offers_the_cameras_size_once_no_app_uses_it() {
+    let Some(server) = server() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let sizes = dir.path().join(rtspcam_engine::SOURCE_SIZES_FILE);
+    let backend = Arc::new(FakeBackend::default());
+    let m = manager_with_sizes(&backend, &sizes);
+    // 1440x1080, which isn't one of the usual sizes.
+    let mut s = stream("Cam", "h264-4x3", &server);
+    s.output = OutputFormat::source(30);
+    let id = s.id;
+    m.apply(&config(vec![s]));
+    wait(Duration::from_secs(5), || {
+        (m.status(id)?.vcam == VcamState::Ready).then_some(())
+    });
+    assert_eq!(backend.log(), ["create Cam 1920x1080@30"]);
+
+    // An app uses the camera: it keeps its formats (and gets pictures scaled to 640x480),
+    // but the size is remembered at once.
+    let source = backend.source(id);
+    source.client_connected(FORMAT);
+    read_until_frame(&*source, Duration::from_secs(15));
+    wait(Duration::from_secs(5), || {
+        std::fs::read_to_string(&sizes)
+            .ok()
+            .filter(|s| s.contains("1440"))
+    });
+    assert_eq!(backend.log(), ["create Cam 1920x1080@30"]);
+
+    // The app leaves: the camera is re-created with the camera's size.
+    source.client_disconnected();
+    wait(Duration::from_secs(5), || {
+        (backend.log().len() == 2).then_some(())
+    });
+    assert_eq!(
+        backend.log(),
+        ["create Cam 1920x1080@30", "reformat Cam 1440x1080@30"]
+    );
+    assert_eq!(status_of(&m, id).offered, (1440, 1080, 30));
+    assert_eq!(status_of(&m, id).vcam, VcamState::Ready);
+
+    // The new camera's pictures are the camera's own, unscaled.
+    let source = backend.source(id);
+    let native = VideoFormat {
+        width: 1440,
+        height: 1080,
+        ..FORMAT
+    };
+    source.client_connected(native);
+    let mut out = Vec::new();
+    wait(Duration::from_secs(15), || {
+        let got = source.next_frame(native, None, &mut out);
+        if got.is_none() {
+            std::thread::sleep(Duration::from_millis(33));
+        }
+        got
+    });
+    assert_eq!(out.len(), native.frame_len());
+    source.client_disconnected();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(backend.log().len(), 2, "re-created only once");
     m.shutdown(Duration::from_secs(5));
 }

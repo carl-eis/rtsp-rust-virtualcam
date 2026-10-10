@@ -5,10 +5,17 @@ use rtspcam_core::config::{BrandTemplate, Field, Problem, StreamConfig, parse_st
 use rtspcam_core::{Config, FitMode, OutputFormat, Picture, Protocol, Secret, Transport};
 
 /// Resolutions offered in the form, as combo box entries (same order as
-/// [`OutputFormat::RESOLUTIONS`]).
-pub const RESOLUTION_LABELS: [&str; 3] = ["1920 x 1080", "1280 x 720", "640 x 480"];
+/// [`OutputFormat::RESOLUTIONS`], then "Source": the camera's own size, at [`SOURCE_RESOLUTION`]).
+pub const RESOLUTION_LABELS: [&str; 4] = [
+    "1920 x 1080",
+    "1280 x 720",
+    "640 x 480",
+    "Source (the camera's own size)",
+];
+/// The index of "Source" in [`RESOLUTION_LABELS`].
+pub const SOURCE_RESOLUTION: usize = OutputFormat::RESOLUTIONS.len();
 /// Frame rates offered in the form (same order as [`OutputFormat::FRAME_RATES`]).
-pub const FPS_LABELS: [&str; 2] = ["30 fps", "15 fps"];
+pub const FPS_LABELS: [&str; 3] = ["60 fps", "30 fps", "15 fps"];
 pub const TRANSPORT_LABELS: [&str; 2] = ["TCP", "UDP"];
 pub const FIT_LABELS: [&str; 3] = ["Letterbox", "Crop", "Stretch"];
 /// Same order as [`rtspcam_core::config::Rotation::ALL`].
@@ -113,14 +120,18 @@ impl Default for StreamForm {
 
 impl StreamForm {
     pub fn from_stream(s: &StreamConfig) -> Self {
-        let resolution = OutputFormat::RESOLUTIONS
-            .iter()
-            .position(|&r| r == (s.output.width, s.output.height))
-            .unwrap_or(1);
+        let resolution = if s.output.source {
+            SOURCE_RESOLUTION
+        } else {
+            OutputFormat::RESOLUTIONS
+                .iter()
+                .position(|&r| r == (s.output.width, s.output.height))
+                .unwrap_or(1)
+        };
         let fps = OutputFormat::FRAME_RATES
             .iter()
             .position(|&f| f == s.output.fps)
-            .unwrap_or(0);
+            .unwrap_or(1);
         Self {
             name: s.name.clone(),
             host: s.host.clone(),
@@ -191,16 +202,28 @@ impl StreamForm {
         } else {
             Transport::Tcp
         };
-        let (width, height) = OutputFormat::RESOLUTIONS
-            .get(self.resolution)
-            .copied()
-            .unwrap_or((1280, 720));
-        s.output.width = width;
-        s.output.height = height;
-        s.output.fps = OutputFormat::FRAME_RATES
+        let fps = OutputFormat::FRAME_RATES
             .get(self.fps)
             .copied()
             .unwrap_or(30);
+        if self.resolution == SOURCE_RESOLUTION {
+            // A stream that already offers its camera's size keeps the size saved with it.
+            if !base.output.source {
+                s.output = OutputFormat::source(fps);
+            }
+            s.output.fps = fps;
+        } else {
+            let (width, height) = OutputFormat::RESOLUTIONS
+                .get(self.resolution)
+                .copied()
+                .unwrap_or((1280, 720));
+            s.output = OutputFormat {
+                width,
+                height,
+                fps,
+                source: false,
+            };
+        }
         s.fit_mode = [FitMode::Letterbox, FitMode::Crop, FitMode::Stretch]
             .get(self.fit)
             .copied()
@@ -289,6 +312,35 @@ mod tests {
         s.on_demand = false;
         let back = StreamForm::from_stream(&s).to_stream(&s, &[]).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn source_resolution_and_60_fps_round_trip() {
+        let base = StreamConfig::default();
+        let form = StreamForm {
+            resolution: SOURCE_RESOLUTION,
+            fps: 0,
+            ..filled()
+        };
+        let s = form.to_stream(&base, &[]).unwrap();
+        assert_eq!(s.output, OutputFormat::source(60));
+        let back = StreamForm::from_stream(&s);
+        assert_eq!((back.resolution, back.fps), (SOURCE_RESOLUTION, 0));
+        assert_eq!(back.to_stream(&s, &[]).unwrap(), s);
+        // Back to a fixed size.
+        let fixed = StreamForm {
+            resolution: 0,
+            ..back
+        }
+        .to_stream(&s, &[])
+        .unwrap();
+        assert_eq!(
+            (fixed.output.width, fixed.output.height, fixed.output.fps),
+            (1920, 1080, 60)
+        );
+        assert!(!fixed.output.source);
+        assert_eq!(RESOLUTION_LABELS.len(), SOURCE_RESOLUTION + 1);
+        assert_eq!(FPS_LABELS.len(), OutputFormat::FRAME_RATES.len());
     }
 
     #[test]
