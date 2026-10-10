@@ -6,7 +6,7 @@
 //! - [`decode`]: the OpenH264 decoder and the hook for the platform's own decoders.
 //! - [`frame`]: decoded NV12 pictures.
 //! - [`bus`]: the per-camera "latest frame" channel between the decoder and its readers.
-//! - [`scale`]: NV12 scaling with the configured fit mode, and NV12 → BGRA for the preview.
+//! - [`scale`]: NV12 scaling with the configured fit mode, and NV12 → BGRA, YUYV and I420.
 //! - [`error`]: errors classified by what the user can do about them.
 //! - [`status`]: stream state and statistics.
 //! - [`transform`]: crop, rotate and flip.

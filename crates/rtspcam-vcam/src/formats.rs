@@ -2,10 +2,10 @@
 
 use rtspcam_ipc::{PixelFormat, VideoFormat};
 use windows::Win32::Media::MediaFoundation::{
-    IMFMediaType, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE, MF_MT_DEFAULT_STRIDE,
-    MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE, MF_MT_SUBTYPE,
-    MFCreateMediaType, MFMediaType_Video, MFVideoFormat_NV12, MFVideoFormat_RGB32,
+    IMFMediaType, MF_E_INVALIDMEDIATYPE, MF_MT_ALL_SAMPLES_INDEPENDENT, MF_MT_AVG_BITRATE,
+    MF_MT_DEFAULT_STRIDE, MF_MT_FIXED_SIZE_SAMPLES, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
+    MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_PIXEL_ASPECT_RATIO, MF_MT_SAMPLE_SIZE,
+    MF_MT_SUBTYPE, MFCreateMediaType, MFMediaType_Video, MFVideoFormat_NV12, MFVideoFormat_RGB32,
     MFVideoInterlace_Progressive,
 };
 
@@ -48,6 +48,8 @@ pub(crate) fn media_type(f: &VideoFormat) -> windows_core::Result<IMFMediaType> 
         PixelFormat::Nv12 => (MFVideoFormat_NV12, f.width),
         // Positive stride: top-down rows, which is how frames arrive over IPC.
         PixelFormat::Rgb32 => (MFVideoFormat_RGB32, f.width * 4),
+        // For push backends on other OSes; never in `advertised`.
+        PixelFormat::Yuyv | PixelFormat::I420 => return Err(MF_E_INVALIDMEDIATYPE.into()),
     };
     let size = f.frame_len() as u32;
     // SAFETY: a fresh media type; plain attribute setters.

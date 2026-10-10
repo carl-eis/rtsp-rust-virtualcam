@@ -8,7 +8,8 @@
 //!
 //! - [`activate`]: the activation object (`IMFActivate` + its attribute store).
 //! - `source` / `stream`: `IMFMediaSourceEx` and `IMFMediaStream2`.
-//! - `feed`: the pipe client thread. `placeholder`: the "no signal" pictures.
+//! - `feed`: the pipe client thread. The "no signal" pictures come from
+//!   [`rtspcam_ipc::placeholder`].
 //!
 //! Every exported function and COM method catches panics and returns an `HRESULT`: a panic
 //! here would take down the Frame Server and every camera on the system.
@@ -21,7 +22,6 @@ mod feed;
 mod formats;
 pub mod guard;
 mod log;
-mod placeholder;
 mod registry;
 mod source;
 mod stream;

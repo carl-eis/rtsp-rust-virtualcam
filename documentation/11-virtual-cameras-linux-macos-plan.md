@@ -1,6 +1,7 @@
 # 11 — Plan: virtual cameras on Linux and macOS
 
-Status: plan (2026-10-09), nothing built yet. It follows the cross-platform work in
+Status: plan (2026-10-09). Phase G is done (2026-10-10, [12](12-progress-phase-g.md)); L and M
+are not started. It follows the cross-platform work in
 [09](09-cross-platform-plan.md) and [10](10-progress-cross-platform.md), which left both OSes
 with `UnsupportedCameras`: preview, config and discovery work, but no camera appears in other
 apps.

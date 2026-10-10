@@ -1,16 +1,33 @@
 //! The picture a camera shows when there are no frames: "RTSP Cam is not running",
-//! "Connecting...", "No signal" and so on. Drawn with a built-in 5x7 font so the DLL needs no
-//! fonts, images or GDI.
+//! "Connecting...", "No signal" and so on. Drawn with a built-in 5x7 font so the Windows DLL
+//! needs no fonts, images or GDI. Shared by the DLL and the app's push backends
+//! (`rtspcam_platform::push`), so every OS shows the same pictures.
 
-use rtspcam_ipc::{PixelFormat, VideoFormat};
+use std::time::Duration;
+
+use crate::protocol::{PixelFormat, StreamStatus, VideoFormat};
+
+/// A frame older than this counts as "no signal" and the placeholder is shown instead.
+pub const STALE_AFTER: Duration = Duration::from_secs(3);
 
 /// Background and text brightness (full range, 0-255).
 const BACKGROUND: u8 = 24;
 const TITLE: u8 = 230;
 const DETAIL: u8 = 150;
 
+/// The title and detail lines for the app's stream status when there is no fresh frame.
+/// `message` is the status message from [`FrameSource::status`](crate::FrameSource::status).
+pub fn text_for_status(status: StreamStatus, message: &str) -> (&'static str, &str) {
+    match status {
+        StreamStatus::Connecting => ("Connecting...", message),
+        StreamStatus::Disabled => ("Camera disabled", ""),
+        StreamStatus::Error => ("No signal", message),
+        StreamStatus::Streaming => ("No signal", ""),
+    }
+}
+
 /// Renders `title` (large) and `detail` (smaller, may be empty) centered on a dark frame.
-pub(crate) fn render(format: &VideoFormat, title: &str, detail: &str) -> Vec<u8> {
+pub fn render(format: &VideoFormat, title: &str, detail: &str) -> Vec<u8> {
     let (w, h) = (format.width as usize, format.height as usize);
     let mut luma = vec![BACKGROUND; w * h];
     let title_scale = (h / 110).max(1);
@@ -71,17 +88,17 @@ fn draw_line(luma: &mut [u8], w: usize, h: usize, text: &str, scale: usize, top:
 
 /// Converts a full-range gray image to the camera's pixel format.
 fn to_format(luma: &[u8], format: &VideoFormat) -> Vec<u8> {
+    // Full range → video range (16-235).
+    let video = |l: u8| 16 + ((u32::from(l) * 219 + 127) / 255) as u8;
     match format.pixel_format {
-        PixelFormat::Nv12 => {
+        // Gray: both 4:2:0 layouts are the Y plane followed by neutral chroma.
+        PixelFormat::Nv12 | PixelFormat::I420 => {
             let mut out = Vec::with_capacity(format.frame_len());
-            // Full range → video range (16-235).
-            out.extend(
-                luma.iter()
-                    .map(|&l| 16 + ((u32::from(l) * 219 + 127) / 255) as u8),
-            );
+            out.extend(luma.iter().map(|&l| video(l)));
             out.resize(format.frame_len(), 128);
             out
         }
+        PixelFormat::Yuyv => luma.iter().flat_map(|&l| [video(l), 128]).collect(),
         PixelFormat::Rgb32 => luma.iter().flat_map(|&l| [l, l, l, 255]).collect(),
     }
 }
@@ -154,7 +171,12 @@ mod tests {
 
     #[test]
     fn sizes_match_the_format() {
-        for pf in [PixelFormat::Nv12, PixelFormat::Rgb32] {
+        for pf in [
+            PixelFormat::Nv12,
+            PixelFormat::Rgb32,
+            PixelFormat::Yuyv,
+            PixelFormat::I420,
+        ] {
             let f = fmt(pf);
             assert_eq!(render(&f, "NO SIGNAL", "details").len(), f.frame_len());
         }
@@ -175,6 +197,38 @@ mod tests {
         // Background stays dark, chroma neutral.
         assert!(y[0] < 40);
         assert!(img[640 * 480..].iter().all(|&c| c == 128));
+    }
+
+    #[test]
+    fn every_yuv_layout_has_the_same_picture() {
+        let nv12 = render(&fmt(PixelFormat::Nv12), "NO SIGNAL", "details");
+        let i420 = render(&fmt(PixelFormat::I420), "NO SIGNAL", "details");
+        assert_eq!(nv12, i420);
+        let yuyv = render(&fmt(PixelFormat::Yuyv), "NO SIGNAL", "details");
+        let (luma, chroma): (Vec<u8>, Vec<u8>) =
+            yuyv.as_chunks::<2>().0.iter().map(|p| (p[0], p[1])).unzip();
+        assert_eq!(luma, nv12[..640 * 480]);
+        assert!(chroma.iter().all(|&c| c == 128));
+    }
+
+    #[test]
+    fn status_text_matches_the_dll() {
+        assert_eq!(
+            text_for_status(StreamStatus::Connecting, "retrying"),
+            ("Connecting...", "retrying")
+        );
+        assert_eq!(
+            text_for_status(StreamStatus::Error, "401 Unauthorized"),
+            ("No signal", "401 Unauthorized")
+        );
+        assert_eq!(
+            text_for_status(StreamStatus::Streaming, "ignored"),
+            ("No signal", "")
+        );
+        assert_eq!(
+            text_for_status(StreamStatus::Disabled, "ignored"),
+            ("Camera disabled", "")
+        );
     }
 
     #[test]

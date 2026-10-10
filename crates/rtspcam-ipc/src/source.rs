@@ -5,10 +5,10 @@ use crate::protocol::{StreamStatus, VideoFormat};
 /// A camera's pictures and state, as the app offers them to whatever delivers them to apps.
 ///
 /// Implemented by the app's camera manager. A virtual camera backend uses it in one of two
-/// ways: a *serving* backend (the Windows DLL, a future macOS extension) hands it to
-/// [`serve`](crate::server::serve) and the consumer pulls frames over a connection; a *push*
-/// backend (a future v4l2loopback device) calls the methods itself: `client_connected` when it
-/// starts, then `next_frame` at the device's frame rate.
+/// ways: a *serving* backend (the Windows DLL) hands it to [`serve`](crate::server::serve) and
+/// the consumer pulls frames over a connection; a *push* backend (v4l2loopback, a CoreMediaIO
+/// extension) hands it to `rtspcam_platform::push::Pusher`, which calls `client_connected`
+/// while an app reads the camera and `next_frame` at the device's frame rate.
 pub trait FrameSource: Send + Sync + 'static {
     /// A consumer started using the camera (called once per connection).
     fn client_connected(&self, _format: VideoFormat) {}

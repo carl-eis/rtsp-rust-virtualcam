@@ -52,10 +52,11 @@ impl std::error::Error for CameraError {}
 ///   cameras vanish with the process. Windows' Frame Server loads `rtspcam_vcam.dll`, which
 ///   connects to the named pipe `\\.\pipe\rtspcam\<id>`; `create` serves `frames` on it.
 /// - **Linux** (future): v4l2loopback. `create` opens the camera's `/dev/videoN` and starts a
-///   thread that calls `frames.client_connected` once and then `frames.next_frame` at the
-///   camera's rate, writing each picture to the device (push; there is no consumer process).
+///   [`Pusher`](crate::push::Pusher) that writes each picture to the device (push; there is no
+///   consumer process).
 /// - **macOS** (future): a CoreMediaIO Camera Extension. `create` asks the extension for a
-///   device and serves `frames` to it over a socket or XPC (like Windows).
+///   device and starts a [`Pusher`](crate::push::Pusher) that enqueues each picture on the
+///   device's sink stream.
 /// - **Linux and macOS today**: [`UnsupportedCameras`].
 ///
 /// Methods block (creating a Windows camera takes about a second). The camera manager calls

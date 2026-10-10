@@ -9,7 +9,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use rtspcam_ipc::{StreamStatus, VideoFormat};
+use rtspcam_ipc::VideoFormat;
+use rtspcam_ipc::placeholder::{self, STALE_AFTER};
 use uuid::Uuid;
 use windows::Win32::Media::KernelStreaming::PINNAME_VIDEO_CAPTURE;
 use windows::Win32::Media::MediaFoundation::{
@@ -29,10 +30,6 @@ use crate::feed::{Feed, FeedStatus};
 use crate::formats::{format_of, media_type};
 use crate::guard::{Agile, ModuleRef, guard};
 use crate::log::log;
-use crate::placeholder;
-
-/// A frame older than this counts as "no signal".
-const STALE_AFTER: Duration = Duration::from_secs(3);
 
 #[implement(IMFMediaStream2)]
 pub(crate) struct MediaStream {
@@ -403,10 +400,7 @@ fn placeholder_text(camera: Option<Uuid>, status: Option<(&FeedStatus, &str)>) -
             "Start RTSP Cam to use this camera",
         ),
         (_, Some((FeedStatus::Waiting, _))) => ("Connecting...", ""),
-        (_, Some((FeedStatus::Stream(StreamStatus::Connecting), m))) => ("Connecting...", m),
-        (_, Some((FeedStatus::Stream(StreamStatus::Disabled), _))) => ("Camera disabled", ""),
-        (_, Some((FeedStatus::Stream(StreamStatus::Error), m))) => ("No signal", m),
-        (_, Some((FeedStatus::Stream(StreamStatus::Streaming), _))) => ("No signal", ""),
+        (_, Some((FeedStatus::Stream(status), m))) => placeholder::text_for_status(*status, m),
     };
     (title.to_owned(), detail.to_owned())
 }
