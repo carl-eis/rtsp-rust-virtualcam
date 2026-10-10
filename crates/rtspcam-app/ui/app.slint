@@ -10,7 +10,16 @@ import {
 
 export { DiscoverDialog, MessageDialog, PictureDialog, SettingsDialog, StreamDialog }
 
+// The `theme` setting.
+export enum Theme { system, light, dark }
+
 export component MainWindow inherits Window {
+    in property <Theme> theme;
+    // Whether the OS is in dark mode, as winit last reported it. Only used once `theme` has
+    // been changed: until then `Palette.color-scheme` reports the OS's setting itself, after
+    // that it reports what was set (`unknown` for "follow the OS").
+    in property <bool> os-dark;
+    out property <bool> dark: Palette.color-scheme == ColorScheme.unknown ? root.os-dark : Palette.color-scheme == ColorScheme.dark;
     // One row per stream: Name, Address, Status, Enabled.
     in property <[[StandardListViewItem]]> rows;
     in-out property <int> current-row: -1;
@@ -35,6 +44,7 @@ export component MainWindow inherits Window {
     callback remove-stream();
     callback toggle-stream();
     callback open-settings();
+    callback toggle-theme();
     callback quit();
     callback open-logs();
     callback about();
@@ -48,6 +58,11 @@ export component MainWindow inherits Window {
     preferred-height: 600px;
     min-width: 800px;
     min-height: 520px;
+
+    // Until this first changes, the style follows the OS by itself. `unknown` follows it again.
+    changed theme => {
+        Palette.color-scheme = root.theme == Theme.light ? ColorScheme.light : root.theme == Theme.dark ? ColorScheme.dark : ColorScheme.unknown;
+    }
 
     MenuBar {
         Menu {
@@ -120,7 +135,6 @@ export component MainWindow inherits Window {
             padding: 10px;
             spacing: 10px;
             HorizontalLayout {
-                alignment: start;
                 spacing: 6px;
                 Button {
                     text: "Add stream";
@@ -170,6 +184,18 @@ export component MainWindow inherits Window {
                     min-width: 106px;
                     clicked => {
                         root.open-settings();
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Button {
+                    text: root.dark ? "Light mode" : "Dark mode";
+                    min-width: 106px;
+                    clicked => {
+                        root.toggle-theme();
                     }
                 }
             }

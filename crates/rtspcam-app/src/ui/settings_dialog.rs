@@ -1,8 +1,8 @@
-//! The Settings dialog: minimize to tray, start at login, log level.
+//! The Settings dialog: minimize to tray, start at login, log level, theme.
 
 use std::rc::Rc;
 
-use rtspcam_core::LogLevel;
+use rtspcam_core::{LogLevel, Theme};
 use slint::{ComponentHandle as _, ModelRc, SharedString, VecModel};
 
 use super::app::App;
@@ -15,6 +15,12 @@ const LEVELS: [(&str, LogLevel); 5] = [
     ("Info", LogLevel::Info),
     ("Debug", LogLevel::Debug),
     ("Trace", LogLevel::Trace),
+];
+
+const THEMES: [(&str, Theme); 3] = [
+    ("Same as the system", Theme::System),
+    ("Light", Theme::Light),
+    ("Dark", Theme::Dark),
 ];
 
 /// Shows the dialog with the current settings.
@@ -37,6 +43,18 @@ pub(crate) fn open(app: &Rc<App>) {
             .position(|(_, l)| *l == current.log_level)
             .unwrap_or(2) as i32,
     );
+    d.set_themes(ModelRc::new(VecModel::from(
+        THEMES
+            .iter()
+            .map(|(name, _)| SharedString::from(*name))
+            .collect::<Vec<_>>(),
+    )));
+    d.set_theme(
+        THEMES
+            .iter()
+            .position(|(_, t)| *t == current.theme)
+            .unwrap_or(0) as i32,
+    );
     d.set_open(true);
 }
 
@@ -53,6 +71,10 @@ fn apply(app: &Rc<App>) {
         .ok()
         .and_then(|i| LEVELS.get(i))
         .map_or(current.log_level, |(_, l)| *l);
+    settings.theme = usize::try_from(d.get_theme())
+        .ok()
+        .and_then(|i| THEMES.get(i))
+        .map_or(current.theme, |(_, t)| *t);
 
     let autostart_failed = (settings.start_with_windows != current.start_with_windows)
         .then(|| app.autostart.set(settings.start_with_windows).err())

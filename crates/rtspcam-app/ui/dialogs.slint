@@ -578,6 +578,8 @@ export global SettingsDialog {
     in property <string> autostart-label;
     in property <[string]> levels;
     in-out property <int> level;
+    in property <[string]> themes;
+    in-out property <int> theme;
     callback ok();
     callback cancel();
 }
@@ -605,6 +607,15 @@ export component SettingsSheet inherits Sheet {
         ComboBox {
             model: SettingsDialog.levels;
             current-index <=> SettingsDialog.level;
+        }
+    }
+
+    Row {
+        label: "Theme";
+        label-width: 80px;
+        ComboBox {
+            model: SettingsDialog.themes;
+            current-index <=> SettingsDialog.theme;
         }
     }
 

@@ -79,6 +79,8 @@ pub struct AppSettings {
     /// Minimizing hides the window and leaves only the tray icon.
     pub minimize_to_tray: bool,
     pub log_level: LogLevel,
+    /// Light or dark window, or whatever the OS uses.
+    pub theme: Theme,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -89,6 +91,7 @@ impl Default for AppSettings {
             start_with_windows: false,
             minimize_to_tray: false,
             log_level: LogLevel::Info,
+            theme: Theme::System,
             extra: Map::new(),
         }
     }
@@ -270,6 +273,17 @@ impl Default for OutputFormat {
     }
 }
 
+/// The window's colours.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the OS's light or dark setting.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 /// Log verbosity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -398,13 +412,13 @@ mod tests {
         let input = json!({
             "version": 1,
             "future_setting": { "a": 1 },
-            "settings": { "minimize_to_tray": true, "theme": "dark" },
+            "settings": { "minimize_to_tray": true, "language": "de" },
             "streams": [{ "name": "A", "host": "h", "ptz": true }]
         });
         let config: Config = serde_json::from_value(input).unwrap();
         let out = serde_json::to_value(&config).unwrap();
         assert_eq!(out["future_setting"], json!({ "a": 1 }));
-        assert_eq!(out["settings"]["theme"], "dark");
+        assert_eq!(out["settings"]["language"], "de");
         assert_eq!(out["streams"][0]["ptz"], true);
     }
 
@@ -432,6 +446,7 @@ mod tests {
         let mut config = Config::default();
         config.settings.minimize_to_tray = true;
         config.settings.log_level = LogLevel::Debug;
+        config.settings.theme = Theme::Dark;
         let mut s = StreamConfig::new("Front Door", "192.168.1.50");
         s.path = "/Streaming/Channels/101".into();
         s.username = "admin".into();
