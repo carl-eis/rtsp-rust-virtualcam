@@ -54,9 +54,12 @@ impl StreamState {
 pub struct StreamStats {
     pub codec: VideoCodec,
     pub decoder: String,
-    /// Decoded picture size.
+    /// The camera's picture size.
     pub width: u32,
     pub height: u32,
+    /// The size the decoder produced: smaller than the camera's when it shrank pictures for
+    /// consumers that need less.
+    pub decoded_size: (u32, u32),
     /// Decoded pictures per second.
     pub fps: f32,
     /// Received video bits per second.

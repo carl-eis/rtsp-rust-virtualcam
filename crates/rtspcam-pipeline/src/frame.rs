@@ -1,6 +1,26 @@
 //! Decoded video frames.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// A picture size (width, height) or none, readable and writable from any thread.
+#[derive(Debug, Default)]
+pub struct AtomicSize(AtomicU64);
+
+impl AtomicSize {
+    pub fn set(&self, size: Option<(u32, u32)>) {
+        // Packed as width << 32 | height; 0 is none (a picture is never 0x0).
+        let v = size.map_or(0, |(w, h)| (u64::from(w) << 32) | u64::from(h));
+        self.0.store(v, Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> Option<(u32, u32)> {
+        match self.0.load(Ordering::Relaxed) {
+            0 => None,
+            v => Some(((v >> 32) as u32, v as u32)),
+        }
+    }
+}
 
 /// Luma value of black in limited-range (video) YUV.
 pub const BLACK_Y: u8 = 16;

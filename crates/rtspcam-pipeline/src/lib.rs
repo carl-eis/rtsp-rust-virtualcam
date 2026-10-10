@@ -25,7 +25,7 @@ pub mod transform;
 
 pub use bus::{FrameBus, FrameReceiver};
 pub use error::{ErrorKind, PipelineError};
-pub use frame::Frame;
+pub use frame::{AtomicSize, Frame};
 pub use pipeline::{BackoffConfig, Pipeline, PipelineOptions};
 pub use scale::{Matrix, Rect, Scaler};
 pub use source::{Credentials, EncodedFrame, RtspSource, SourceOptions, StreamInfo, VideoCodec};

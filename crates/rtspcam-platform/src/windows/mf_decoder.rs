@@ -27,12 +27,12 @@ use windows::Win32::Media::MediaFoundation::{
     MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video, MFSTARTUP_NOSOCKET,
     MFShutdown, MFStartup, MFT_CATEGORY_VIDEO_DECODER, MFT_ENUM_FLAG, MFT_ENUM_FLAG_LOCALMFT,
     MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_FRIENDLY_NAME_Attribute,
-    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea,
-    MFVideoFormat_H264, MFVideoFormat_HEVC, MFVideoFormat_I420, MFVideoFormat_IYUV,
-    MFVideoFormat_MJPG, MFVideoFormat_NV12, MFVideoFormat_YUY2, MFVideoFormat_YV12,
-    MFVideoInterlace_Progressive,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFT_REGISTER_TYPE_INFO, MFTEnumEx, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_HEVC,
+    MFVideoFormat_I420, MFVideoFormat_IYUV, MFVideoFormat_MJPG, MFVideoFormat_NV12,
+    MFVideoFormat_YUY2, MFVideoFormat_YV12, MFVideoInterlace_Progressive,
 };
 use windows::Win32::System::Com::{
     COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -180,6 +180,11 @@ struct OutputFormat {
     visible: (u32, u32, u32, u32),
 }
 
+/// Decode errors before any picture after which hardware decoding is given up. Each error
+/// makes the pipeline skip to the next key frame, so every one more costs a key frame interval
+/// of no picture before software decoding takes over.
+const EARLY_FAILURES_LOST: u32 = 2;
+
 pub(crate) struct MfDecoder {
     // Field order matters: COM objects must be released before Media Foundation shuts down.
     transform: IMFTransform,
@@ -192,6 +197,8 @@ pub(crate) struct MfDecoder {
     name: String,
     on_gpu: bool,
     pictures: u64,
+    /// Decode errors before the first picture (see [`classify`](Self::classify)).
+    early_failures: u32,
     limit: Option<(u32, u32)>,
     output: Option<OutputFormat>,
     /// Our own output sample, when the MFT doesn't allocate them.
@@ -293,6 +300,7 @@ impl MfDecoder {
             mft_name,
             on_gpu: false,
             pictures: 0,
+            early_failures: 0,
             limit: None,
             output: None,
             out_sample: None,
@@ -477,9 +485,11 @@ impl MfDecoder {
         }
     }
 
-    /// In Direct3D 11 mode, a lost device or a failure before the first picture means this
-    /// decoder can't go on: the pipeline replaces it (in software after an early failure).
-    fn classify(&self, e: PipelineError) -> PipelineError {
+    /// In Direct3D 11 mode, a lost device, or repeated failures before the first picture, mean
+    /// this decoder can't go on: the pipeline replaces it (in software after early failures).
+    /// A single early failure is more likely a damaged key frame, so decoding gets one more
+    /// key frame before giving up.
+    fn classify(&mut self, e: PipelineError) -> PipelineError {
         let Some(copy_back) = &self.copy_back else {
             return e;
         };
@@ -491,6 +501,17 @@ impl MfDecoder {
             );
         }
         if self.pictures == 0 {
+            self.early_failures += 1;
+            if self.early_failures < EARLY_FAILURES_LOST {
+                // The next key frame starts on an empty decoder, not on what just failed.
+                // SAFETY: valid transform; flushing takes no parameter.
+                let flushed =
+                    unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) };
+                if let Err(flush) = flushed {
+                    tracing::debug!(decoder = %self.name, error = %flush, "flush failed");
+                }
+                return e;
+            }
             return PipelineError::new(
                 ErrorKind::DecoderLost,
                 format!("hardware decoding failed ({e})"),

@@ -45,12 +45,7 @@ impl Common {
     fn apply_hardware(&self) {
         decode::set_use_hardware(self.hardware);
         if self.hardware {
-            let until = Instant::now() + Duration::from_secs(5);
-            let mut found = decode::hardware_decoding();
-            while found == decode::HardwareDecoding::Checking && Instant::now() < until {
-                std::thread::sleep(Duration::from_millis(50));
-                found = decode::hardware_decoding();
-            }
+            let found = decode::wait_for_hardware_probe(Duration::from_secs(5));
             println!("hardware:  {}", found.describe());
         }
     }

@@ -26,9 +26,11 @@ use std::time::Duration;
 use rtspcam_core::config::{OnDisconnect, Picture, Rotation, StreamConfig};
 use rtspcam_core::profile::{self, Stage};
 use rtspcam_core::{Config, FitMode};
+use rtspcam_ipc::source::PictureSignal;
 use rtspcam_pipeline::transform;
 use rtspcam_pipeline::{
-    Frame, FrameBus, Pipeline, PipelineError, PipelineOptions, SourceOptions, StreamState,
+    AtomicSize, Frame, FrameBus, Pipeline, PipelineError, PipelineOptions, SourceOptions,
+    StreamState,
 };
 use rtspcam_platform::{CameraError, CameraSpec, VirtualCameraBackend};
 use tokio::runtime::{Handle, Runtime};
@@ -84,6 +86,9 @@ struct Demand {
 
 /// A size asked for is forgotten when nobody asked for it this long (its consumer left).
 const REQUEST_TTL: Duration = Duration::from_secs(3);
+/// A size asked for again within this long changes nothing, so the limit isn't worked out
+/// again for every frame a consumer reads.
+const REQUEST_REFRESH: Duration = Duration::from_millis(500);
 
 /// The picture sizes consumers and the preview asked for recently, and the decoder size limit
 /// worked out from them.
@@ -92,7 +97,7 @@ struct Requests {
     /// Size and how the picture is fitted into it.
     seen: HashMap<(u32, u32, FitMode), std::time::Instant>,
     limit: Option<(u32, u32)>,
-    /// The camera's picture size, once a picture arrived (`Frame::source_size`).
+    /// The camera's picture size `limit` was worked out with.
     source: Option<(u32, u32)>,
 }
 
@@ -198,6 +203,8 @@ pub(crate) struct CameraShared {
     pipeline: Mutex<Option<Pipeline>>,
     /// Sizes asked for, for the decoder's size limit (`None`: don't limit).
     requests: Option<Mutex<Requests>>,
+    /// The camera's picture size, once a picture arrived (`Frame::source_size`).
+    source_size: AtomicSize,
     notify: Notify,
 }
 
@@ -215,6 +222,7 @@ impl CameraShared {
             vcam: Mutex::new(VcamState::Pending),
             pipeline: Mutex::new(None),
             requests: Some(Mutex::default()),
+            source_size: AtomicSize::default(),
             notify,
         }
     }
@@ -232,11 +240,21 @@ impl CameraShared {
             return;
         };
         let now = std::time::Instant::now();
-        // A handful of entries at most (one per distinct size), so recomputing is cheap.
+        let source = self.source_size.get();
+        let key = (width, height, fit);
         let mut r = requests.lock().unwrap_or_else(PoisonError::into_inner);
-        r.seen.insert((width, height, fit), now);
+        // Most calls repeat a size asked for moments ago, for the same camera picture.
+        if r.source == source
+            && r.seen
+                .get(&key)
+                .is_some_and(|t| now.duration_since(*t) < REQUEST_REFRESH)
+        {
+            return;
+        }
+        // A handful of entries at most (one per distinct size), so recomputing is cheap.
+        r.seen.insert(key, now);
         r.seen.retain(|_, t| now.duration_since(*t) < REQUEST_TTL);
-        let source = r.source;
+        r.source = source;
         let limit = r
             .seen
             .keys()
@@ -256,13 +274,41 @@ impl CameraShared {
         }
     }
 
+    /// Finishes when the stream publishes a picture (see [`FrameSource::picture_signal`]).
+    ///
+    /// [`FrameSource::picture_signal`]: rtspcam_ipc::FrameSource::picture_signal
+    pub(crate) fn picture_signal(&self) -> Option<PictureSignal> {
+        let mut rx = self
+            .bus
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()?
+            .subscribe();
+        Some(Box::pin(async move {
+            let _ = rx.changed().await;
+        }))
+    }
+
     /// The current decoded size limit.
+    #[cfg(test)]
     fn size_limit(&self) -> Option<(u32, u32)> {
         self.requests
             .as_ref()?
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .limit
+    }
+
+    /// Makes `pipeline` the camera's, with the current decoded size limit. Holds the requests
+    /// lock throughout (the same order as [`note_request`](Self::note_request)), so a limit
+    /// worked out meanwhile isn't lost.
+    fn install_pipeline(&self, pipeline: Pipeline) {
+        let requests = self
+            .requests
+            .as_ref()
+            .map(|r| r.lock().unwrap_or_else(PoisonError::into_inner));
+        pipeline.set_size_limit(requests.as_ref().and_then(|r| r.limit));
+        *self.pipeline.lock().unwrap_or_else(PoisonError::into_inner) = Some(pipeline);
     }
 
     /// The newest picture with the stream's picture settings applied (crop, rotate, flip, text).
@@ -283,12 +329,7 @@ impl CameraShared {
                 .then(|| adjusted.shown.clone())
                 .flatten();
         };
-        if let Some(requests) = &self.requests {
-            requests
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .source = Some(raw.source_size);
-        }
+        self.source_size.set(Some(raw.source_size));
         let shown = adjusted.adjust(raw, &self.name, &self.picture);
         if self.picture.on_disconnect == OnDisconnect::FreezeLastFrame {
             adjusted.shown = Some(shown.clone());
@@ -743,13 +784,9 @@ async fn supervise(
                     &handle,
                 );
                 camera.set_bus(Some(pipeline.frames().clone()));
-                pipeline.set_size_limit(camera.size_limit());
                 let rx = pipeline.status();
                 camera.set_activity(Activity::Running(rx.borrow().clone()));
-                *camera
-                    .pipeline
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner) = Some(pipeline);
+                camera.install_pipeline(pipeline);
                 status = Some(rx);
             }
         } else if status.is_some() {
@@ -941,5 +978,59 @@ mod tests {
         let cam = camera(Picture::default()).without_size_limit();
         cam.note_request(640, 360, FitMode::Crop);
         assert_eq!(cam.size_limit(), None);
+    }
+
+    /// Moves when `key` was last asked for to `ago` before now.
+    fn asked_ago(cam: &CameraShared, key: (u32, u32, FitMode), ago: Duration) {
+        let mut r = cam.requests.as_ref().unwrap().lock().unwrap();
+        *r.seen.get_mut(&key).unwrap() = std::time::Instant::now().checked_sub(ago).unwrap();
+    }
+
+    fn asked_at(cam: &CameraShared, key: (u32, u32, FitMode)) -> std::time::Instant {
+        cam.requests.as_ref().unwrap().lock().unwrap().seen[&key]
+    }
+
+    #[test]
+    fn a_size_asked_for_again_moments_ago_changes_nothing() {
+        let cam = camera(Picture::default());
+        let key = (1280, 720, FitMode::Crop);
+        cam.note_request(key.0, key.1, key.2);
+        asked_ago(&cam, key, Duration::from_millis(100));
+        let before = asked_at(&cam, key);
+        cam.note_request(key.0, key.1, key.2);
+        assert_eq!(asked_at(&cam, key), before);
+        // Asked for again later: the request is renewed.
+        asked_ago(&cam, key, REQUEST_REFRESH + Duration::from_millis(10));
+        let before = asked_at(&cam, key);
+        cam.note_request(key.0, key.1, key.2);
+        assert!(asked_at(&cam, key) > before);
+    }
+
+    #[test]
+    fn sizes_nobody_asked_for_lately_are_forgotten() {
+        let cam = camera(Picture::default());
+        cam.note_request(1920, 1080, FitMode::Crop);
+        cam.note_request(640, 360, FitMode::Crop);
+        assert_eq!(cam.size_limit(), Some((1920, 1080)));
+        asked_ago(&cam, (1920, 1080, FitMode::Crop), REQUEST_TTL);
+        asked_ago(&cam, (640, 360, FitMode::Crop), REQUEST_REFRESH);
+        cam.note_request(640, 360, FitMode::Crop);
+        assert_eq!(cam.size_limit(), Some((640, 360)));
+    }
+
+    #[test]
+    fn the_size_limit_follows_the_cameras_picture_size() {
+        let rotated = Picture {
+            rotate: Rotation::Cw90,
+            ..Picture::default()
+        };
+        let cam = camera(rotated);
+        cam.note_request(1280, 720, FitMode::Letterbox);
+        // Not knowing the camera's shape yet: enough for any.
+        assert_eq!(cam.size_limit(), Some((720, 1280)));
+        // A picture arrived: worked out again at once, though the size was just asked for.
+        cam.source_size.set(Some((1920, 1080)));
+        cam.note_request(1280, 720, FitMode::Letterbox);
+        assert_eq!(cam.size_limit(), Some((720, 405)));
     }
 }

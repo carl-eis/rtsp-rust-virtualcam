@@ -13,6 +13,7 @@ use rtspcam_core::FitMode;
 use rtspcam_core::config::ConfigStore;
 use rtspcam_core::constants::vcam_source_clsid_string;
 use rtspcam_ipc::server::{FrameSource, serve};
+use rtspcam_ipc::source::PictureSignal;
 use rtspcam_ipc::{PixelFormat, StreamStatus, VideoFormat};
 use rtspcam_pipeline::pattern::{read_counter, test_pattern};
 use rtspcam_pipeline::scale::{nv12_to_bgra, nv12_to_i420, nv12_to_yuyv};
@@ -330,6 +331,13 @@ impl FrameSource for BusSource {
 
     fn status(&self) -> (StreamStatus, String) {
         (self.status)()
+    }
+
+    fn picture_signal(&self) -> Option<PictureSignal> {
+        let mut rx = self.bus.subscribe();
+        Some(Box::pin(async move {
+            let _ = rx.changed().await;
+        }))
     }
 }
 

@@ -147,6 +147,18 @@ pub fn hardware_decoding() -> HardwareDecoding {
     )
 }
 
+/// [`hardware_decoding`], once the platform's probe finished (or `timeout` passed). Blocks.
+pub fn wait_for_hardware_probe(timeout: Duration) -> HardwareDecoding {
+    let until = Instant::now() + timeout;
+    loop {
+        let h = hardware_decoding();
+        if h != HardwareDecoding::Checking || Instant::now() > until {
+            return h;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Turns hardware decoding on or off. Off by default in every process. Running pipelines
 /// switch decoders at their next key frame, without reconnecting.
 pub fn set_use_hardware(on: bool) {

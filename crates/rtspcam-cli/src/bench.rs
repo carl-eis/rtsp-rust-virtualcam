@@ -114,7 +114,7 @@ pub(crate) fn run(store: &ConfigStore, args: BenchArgs) -> anyhow::Result<ExitCo
         config.streams.push(stream);
     }
 
-    let hardware = wait_for_probe();
+    let hardware = decode::wait_for_hardware_probe(Duration::from_secs(5));
     println!("hardware decoding: {}", hardware.describe());
     println!(
         "hardware decoding is {} for this run",
@@ -190,18 +190,6 @@ pub(crate) fn run(store: &ConfigStore, args: BenchArgs) -> anyhow::Result<ExitCo
     Ok(ExitCode::SUCCESS)
 }
 
-/// Waits (up to 5 s) for the hardware probe that `rtspcam_platform::install` started.
-fn wait_for_probe() -> decode::HardwareDecoding {
-    let until = Instant::now() + Duration::from_secs(5);
-    loop {
-        let h = decode::hardware_decoding();
-        if h != decode::HardwareDecoding::Checking || Instant::now() > until {
-            return h;
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-}
-
 fn resolve(store: &ConfigStore, stream: &str) -> anyhow::Result<StreamConfig> {
     if !stream.contains("://") {
         let config = store.load()?;
@@ -255,8 +243,8 @@ fn report(
         secs
     );
     println!();
-    println!("| Stream | Decoder | Decoded size | fps | Decode ms/picture |");
-    println!("|---|---|---|---|---|");
+    println!("| Stream | Decoder | Camera size | Decoded size | fps | Decode ms/picture |");
+    println!("|---|---|---|---|---|---|");
     let mut names: Vec<&String> = stats.keys().collect();
     names.sort();
     for name in names {
@@ -266,10 +254,12 @@ fn report(
         let fps = s.iter().map(|x| f64::from(x.fps)).sum::<f64>() / n;
         let decode = s.iter().map(|x| x.decode_time.as_secs_f64()).sum::<f64>() / n;
         println!(
-            "| {name} | {} | {}x{} | {fps:.1} | {:.2} |",
+            "| {name} | {} | {}x{} | {}x{} | {fps:.1} | {:.2} |",
             last.decoder,
             last.width,
             last.height,
+            last.decoded_size.0,
+            last.decoded_size.1,
             decode * 1000.0
         );
     }
