@@ -37,6 +37,12 @@ pub enum PixelFormat {
     Nv12,
     /// B, G, R, X bytes per pixel, top-down, rows `width * 4` bytes.
     Rgb32,
+    /// Packed 4:2:2: Y0, U, Y1, V for each pair of pixels, rows `width * 2` bytes. For push
+    /// backends (v4l2loopback, CoreMediaIO); the Windows DLL never asks for it.
+    Yuyv,
+    /// Planar 4:2:0: the Y plane, then U, then V, each chroma plane `width / 2` by
+    /// `height / 2`. For push backends, like `Yuyv`.
+    I420,
 }
 
 impl PixelFormat {
@@ -44,6 +50,8 @@ impl PixelFormat {
         match self {
             Self::Nv12 => 0,
             Self::Rgb32 => 1,
+            Self::Yuyv => 2,
+            Self::I420 => 3,
         }
     }
 
@@ -51,6 +59,8 @@ impl PixelFormat {
         match code {
             0 => Some(Self::Nv12),
             1 => Some(Self::Rgb32),
+            2 => Some(Self::Yuyv),
+            3 => Some(Self::I420),
             _ => None,
         }
     }
@@ -70,8 +80,9 @@ impl VideoFormat {
     pub fn frame_len(&self) -> usize {
         let (w, h) = (self.width as usize, self.height as usize);
         match self.pixel_format {
-            PixelFormat::Nv12 => w * h * 3 / 2,
+            PixelFormat::Nv12 | PixelFormat::I420 => w * h * 3 / 2,
             PixelFormat::Rgb32 => w * h * 4,
+            PixelFormat::Yuyv => w * h * 2,
         }
     }
 
@@ -399,6 +410,14 @@ mod tests {
             },
             Message::SetFormat(VideoFormat {
                 pixel_format: PixelFormat::Rgb32,
+                ..FMT
+            }),
+            Message::SetFormat(VideoFormat {
+                pixel_format: PixelFormat::Yuyv,
+                ..FMT
+            }),
+            Message::SetFormat(VideoFormat {
+                pixel_format: PixelFormat::I420,
                 ..FMT
             }),
             Message::Status {

@@ -8,11 +8,13 @@
 //!
 //! - [`protocol`]: the message format, shared by both sides.
 //! - [`source`]: [`FrameSource`], where a camera's frames come from in the app.
+//! - [`placeholder`]: the "No signal" / "Connecting..." pictures shown when there are no frames.
 //! - [`client`]: blocking client for the camera side (no tokio: the DLL runs inside a Windows
 //!   service).
 //! - [`server`] (feature `server`): async server for the app, over any [`server::FrameListener`].
 
 pub mod client;
+pub mod placeholder;
 pub mod protocol;
 #[cfg(feature = "server")]
 pub mod server;

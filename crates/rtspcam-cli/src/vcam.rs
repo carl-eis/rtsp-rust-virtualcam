@@ -15,7 +15,7 @@ use rtspcam_core::constants::vcam_source_clsid_string;
 use rtspcam_ipc::server::{FrameSource, serve};
 use rtspcam_ipc::{PixelFormat, StreamStatus, VideoFormat};
 use rtspcam_pipeline::pattern::{read_counter, test_pattern};
-use rtspcam_pipeline::scale::nv12_to_bgra;
+use rtspcam_pipeline::scale::{nv12_to_bgra, nv12_to_i420, nv12_to_yuyv};
 use rtspcam_pipeline::{
     Frame, FrameBus, Matrix, Pipeline, PipelineOptions, Scaler, SourceOptions, StreamState,
 };
@@ -315,6 +315,14 @@ impl FrameSource for BusSource {
             PixelFormat::Rgb32 => {
                 let scaled = scaler.scale(&frame, format.width, format.height, self.fit);
                 nv12_to_bgra(&scaled, Matrix::for_height(frame.height()), out);
+            }
+            PixelFormat::Yuyv => {
+                let scaled = scaler.scale(&frame, format.width, format.height, self.fit);
+                nv12_to_yuyv(&scaled, out);
+            }
+            PixelFormat::I420 => {
+                let scaled = scaler.scale(&frame, format.width, format.height, self.fit);
+                nv12_to_i420(&scaled, out);
             }
         }
         Some(st.seq)

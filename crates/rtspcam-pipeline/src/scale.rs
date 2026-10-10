@@ -1,4 +1,5 @@
-//! CPU scaling of NV12 pictures to a target size, and NV12 → BGRA conversion for the preview.
+//! CPU scaling of NV12 pictures to a target size, NV12 → BGRA conversion for the preview, and
+//! NV12 → YUYV / I420 for the push camera backends.
 //!
 //! Bilinear filtering with 8-bit fixed-point weights. The GPU path (Video Processor MFT) is a
 //! Phase 8 optimization; this one has no dependencies and works everywhere.
@@ -315,6 +316,41 @@ fn nv12_to_rgb32(frame: &Frame, matrix: Matrix, out: &mut Vec<u8>, order: (usize
     }
 }
 
+/// Converts an NV12 frame to packed YUYV (Y0, U, Y1, V), `width * 2` bytes per row. Each
+/// chroma row is used for the two picture rows it covers. Values are copied, not rescaled.
+pub fn nv12_to_yuyv(frame: &Frame, out: &mut Vec<u8>) {
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    out.resize(w * h * 2, 0);
+    let (y_plane, uv_plane) = (frame.y(), frame.uv());
+    for row in 0..h {
+        let y_row = &y_plane[row * w..(row + 1) * w];
+        let uv_row = &uv_plane[(row / 2) * w..(row / 2 + 1) * w];
+        let out_row = &mut out[row * w * 2..(row + 1) * w * 2];
+        let pixels = out_row.as_chunks_mut::<4>().0.iter_mut();
+        for ((px, y), uv) in pixels
+            .zip(y_row.as_chunks::<2>().0)
+            .zip(uv_row.as_chunks::<2>().0)
+        {
+            *px = [y[0], uv[0], y[1], uv[1]];
+        }
+    }
+}
+
+/// Converts an NV12 frame to planar I420: the same Y plane, then the U and V planes split out
+/// of NV12's interleaved UV plane.
+pub fn nv12_to_i420(frame: &Frame, out: &mut Vec<u8>) {
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let chroma = (w / 2) * (h / 2);
+    out.resize(w * h + 2 * chroma, 0);
+    let (y_out, uv_out) = out.split_at_mut(w * h);
+    y_out.copy_from_slice(frame.y());
+    let (u_out, v_out) = uv_out.split_at_mut(chroma);
+    for ((uv, u), v) in frame.uv().as_chunks::<2>().0.iter().zip(u_out).zip(v_out) {
+        *u = uv[0];
+        *v = uv[1];
+    }
+}
+
 fn clamp8(v: i32) -> u8 {
     v.clamp(0, 255) as u8
 }
@@ -454,5 +490,33 @@ mod tests {
         for (b, r) in bgra.as_chunks::<4>().0.iter().zip(rgba.as_chunks::<4>().0) {
             assert_eq!([b[2], b[1], b[0], b[3]], *r);
         }
+    }
+
+    /// 4x4 with every sample distinct: Y = 0..16, U = 100.., V = 200.. (chroma row 1 adds 10).
+    fn numbered() -> Frame {
+        let mut data: Vec<u8> = (0..16).collect();
+        data.extend([100, 200, 101, 201, 110, 210, 111, 211]);
+        Frame::from_nv12(4, 4, data)
+    }
+
+    #[test]
+    fn yuyv_pairs_luma_with_the_chroma_above_it() {
+        let mut out = Vec::new();
+        nv12_to_yuyv(&numbered(), &mut out);
+        assert_eq!(out.len(), 4 * 4 * 2);
+        assert_eq!(&out[..8], &[0, 100, 1, 200, 2, 101, 3, 201]);
+        // Row 1 reuses chroma row 0; row 2 uses chroma row 1.
+        assert_eq!(&out[8..16], &[4, 100, 5, 200, 6, 101, 7, 201]);
+        assert_eq!(&out[16..24], &[8, 110, 9, 210, 10, 111, 11, 211]);
+    }
+
+    #[test]
+    fn i420_splits_the_chroma_planes() {
+        let mut out = vec![9; 3]; // resized, not appended to
+        nv12_to_i420(&numbered(), &mut out);
+        let y: Vec<u8> = (0..16).collect();
+        assert_eq!(&out[..16], &y[..]);
+        assert_eq!(&out[16..20], &[100, 101, 110, 111]);
+        assert_eq!(&out[20..], &[200, 201, 210, 211]);
     }
 }

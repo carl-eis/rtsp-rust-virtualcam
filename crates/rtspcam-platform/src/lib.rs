@@ -19,12 +19,15 @@
 //!
 //! A program calls [`install`] once at startup, then the constructors below for the services
 //! it needs, and passes them on as trait objects.
+//!
+//! [`push`] holds the portable frame loop ([`push::Pusher`]) that push camera backends share.
 
 pub mod autostart;
 pub mod camera;
 pub mod desktop;
 pub mod instance;
 mod login_items;
+pub mod push;
 pub mod transport;
 
 #[cfg(target_os = "linux")]

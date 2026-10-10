@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use rtspcam_ipc::FrameSource;
 use rtspcam_ipc::{PixelFormat, StreamStatus, VideoFormat};
-use rtspcam_pipeline::scale::nv12_to_bgra;
+use rtspcam_pipeline::scale::{nv12_to_bgra, nv12_to_i420, nv12_to_yuyv};
 use rtspcam_pipeline::{Frame, Matrix, Scaler};
 
 use crate::manager::CameraShared;
@@ -82,6 +82,14 @@ impl FrameSource for CameraSource {
                 let scaled = st.scaler.scale(&frame, format.width, format.height, fit);
                 nv12_to_bgra(&scaled, Matrix::for_height(frame.height()), out);
             }
+            PixelFormat::Yuyv => {
+                let scaled = st.scaler.scale(&frame, format.width, format.height, fit);
+                nv12_to_yuyv(&scaled, out);
+            }
+            PixelFormat::I420 => {
+                let scaled = st.scaler.scale(&frame, format.width, format.height, fit);
+                nv12_to_i420(&scaled, out);
+            }
         }
         Some(seq)
     }
@@ -142,5 +150,24 @@ mod tests {
         assert_eq!(out.len(), Frame::nv12_len(64, 32));
         // Not on every poll: the next resend is due only after a pause.
         assert_eq!(source.next_frame(FORMAT, Some(again), &mut out), None);
+    }
+
+    #[test]
+    fn every_pixel_format_has_the_right_size() {
+        let (source, _camera) = source(OnDisconnect::NoSignal);
+        for pixel_format in [
+            PixelFormat::Nv12,
+            PixelFormat::Rgb32,
+            PixelFormat::Yuyv,
+            PixelFormat::I420,
+        ] {
+            let format = VideoFormat {
+                pixel_format,
+                ..FORMAT
+            };
+            let mut out = Vec::new();
+            source.next_frame(format, None, &mut out).unwrap();
+            assert_eq!(out.len(), format.frame_len(), "{format}");
+        }
     }
 }

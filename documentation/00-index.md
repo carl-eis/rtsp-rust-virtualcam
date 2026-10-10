@@ -12,8 +12,10 @@ Section numbers (§) refer to the headings inside each document.
 - **Cross-platform:** the OS-specific code is in `rtspcam-platform`, and the UI is Slint instead
   of winsafe. The app runs on Windows and Linux, and it builds and passes its tests on macOS.
   This work was merged to `master` in PR #1.
-- **Linux and macOS virtual cameras:** only a plan so far ([11](11-virtual-cameras-linux-macos-plan.md)).
-  Both OSes use `UnsupportedCameras` today.
+- **Linux and macOS virtual cameras:** planned in [11](11-virtual-cameras-linux-macos-plan.md).
+  Phase G (shared frame pusher, placeholder in `rtspcam-ipc`, YUYV/I420) is done
+  ([12](12-progress-phase-g.md), 2026-10-10); phases L and M are not started, so both OSes
+  still use `UnsupportedCameras`.
 
 ## 2. The documents
 
@@ -29,7 +31,8 @@ Section numbers (§) refer to the headings inside each document.
 | 08 | [08-progress-phase-7.md](08-progress-phase-7.md) | Progress | Phase 7 (Inno Setup installer, release workflow) | Installer decisions and what is still unverified |
 | 09 | [09-cross-platform-plan.md](09-cross-platform-plan.md) | Plan | `rtspcam-platform`, `rtspcam-engine`, Slint | The traits at the OS boundary, the crate layout, where `cfg` is allowed |
 | 10 | [10-progress-cross-platform.md](10-progress-cross-platform.md) | Progress | Steps A–F of 09, CI on three OSes | **Current** crate layout and trait table; what still needs checking on each OS |
-| 11 | [11-virtual-cameras-linux-macos-plan.md](11-virtual-cameras-linux-macos-plan.md) | Plan | v4l2loopback (Linux), CoreMediaIO extension (macOS) | **Next work:** phases G, L and M |
+| 11 | [11-virtual-cameras-linux-macos-plan.md](11-virtual-cameras-linux-macos-plan.md) | Plan | v4l2loopback (Linux), CoreMediaIO extension (macOS) | **Next work:** phases L and M (G is done) |
+| 12 | [12-progress-phase-g.md](12-progress-phase-g.md) | Progress | Phase G of 11 | **Current** `Pusher`/`FrameSink`, shared placeholder, new pixel formats, on-demand without reader info |
 
 ### Which documents are current
 
@@ -42,20 +45,21 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Startup sweep of stale cameras (`remove_stale`, 05 §2) | Removed; session cameras vanish even on a hard kill ([06 §3](06-checkpoint-2026-10-09.md#3-decisions-made-since-0304)) |
 | winsafe UI, GDI preview, GDI overlay text, tray balloon (05, 06, 07) | Slint UI, `ab_glyph` overlay, Slint tray: [10 §1–2](10-progress-cross-platform.md#1-what-was-done) |
 | Code locations in `rtspcam-app/src/` (`manager.rs`, `source.rs`, `overlay.rs`, `backend.rs`, ...) | Moved to `rtspcam-engine` and `rtspcam-platform`: [09 §5](09-cross-platform-plan.md#5-where-each-file-goes) |
+| Placeholder pictures in `rtspcam-vcam/src/placeholder.rs`; "nothing built yet" in 11 | `rtspcam_ipc::placeholder`, phase G done: [12](12-progress-phase-g.md) |
 | `rust-version` 1.85 (02, 05, 06) | 1.92 ([10 §2](10-progress-cross-platform.md#2-decisions-beyond-the-plan)) |
 | CI "never run" / "unknown" (02–08) | Green on Windows, Linux and macOS ([10 §7](10-progress-cross-platform.md#7-step-e-ci)) |
-| Next free document number (04, 05, 06, 07) | 12. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
+| Next free document number (04, 05, 06, 07) | 13. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
 ## 3. Reading order by task
 
 | If you want to... | Read |
 |---|---|
 | Get up to speed quickly | This file, then [10](10-progress-cross-platform.md), then [06](06-checkpoint-2026-10-09.md) |
-| Resume work | [10 §6](10-progress-cross-platform.md#6-how-to-resume), then [11 §7](11-virtual-cameras-linux-macos-plan.md#7-order-size-and-what-each-phase-delivers) |
+| Resume work | [10 §6](10-progress-cross-platform.md#6-how-to-resume), then [12 §5](12-progress-phase-g.md#5-how-to-resume) and [11 §7](11-virtual-cameras-linux-macos-plan.md#7-order-size-and-what-each-phase-delivers) |
 | Build and run on Windows | [06 §6](06-checkpoint-2026-10-09.md#6-how-to-resume), [02 §6](02-progress.md#6-developer-setup-notes) (Build Tools, build from PowerShell) |
 | Build and test on Linux | [10 §7](10-progress-cross-platform.md#7-step-e-ci) (Docker command), [10 §5](10-progress-cross-platform.md#5-known-gaps) (system libraries) |
 | Do the checks that need a person | [10 §4](10-progress-cross-platform.md#4-not-verified), [08](08-progress-phase-7.md#not-verified-needs-a-person-ideally-on-a-vm), [07 §5](07-progress-phase-6.md#5-not-verified-needs-a-person), [06 §4](06-checkpoint-2026-10-09.md#4-verification-state) |
-| Add a virtual camera backend for Linux or macOS | [11](11-virtual-cameras-linux-macos-plan.md), [09 §4.1](09-cross-platform-plan.md#4-traits) |
+| Add a virtual camera backend for Linux or macOS | [11](11-virtual-cameras-linux-macos-plan.md), [09 §4.1](09-cross-platform-plan.md#4-traits), the `Pusher` in [12 §1](12-progress-phase-g.md#pusher-rtspcam_platformpush) |
 | Start Phase 8 (Windows hardening) | [01 Phase 8](01-plan.md#phase-8-performance-robustness-and-compatibility), [03 §6](03-progress-phases-2-3.md#6-known-issues), [06 §5](06-checkpoint-2026-10-09.md#5-known-problems-and-rough-edges) |
 | Change the config format | [01 §3.2](01-plan.md#32-stream-definition-and-json-configuration), [02 §3](02-progress.md#3-what-exists-crate-by-crate), [07 picture options](07-progress-phase-6.md#per-camera-picture-options) |
 | Touch Media Foundation or retina code | [04 §3](04-session-2026-10-09.md#3-lessons-learned-the-non-obvious-parts) first |
@@ -117,7 +121,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 |---|---|
 | MF virtual camera API facts | [01 §2.1](01-plan.md#21-how-to-make-a-virtual-webcam-on-windows) |
 | Pipe protocol (header, messages, validation, DACL) | [03 §3](03-progress-phases-2-3.md#ipc-rtspcam-ipc) |
-| DLL structure, pacing, placeholders, logs | [03 §3](03-progress-phases-2-3.md#the-dll-rtspcam_vcamdll) |
+| DLL structure, pacing, placeholders, logs | [03 §3](03-progress-phases-2-3.md#the-dll-rtspcam_vcamdll); the placeholder now lives in `rtspcam-ipc` ([12 §1](12-progress-phase-g.md#placeholder-rtspcam_ipcplaceholder)) |
 | Camera identity: attributes on `IMFVirtualCamera` | [05 §6](05-progress-phases-4-5.md#6-update-first-run-through-frame-server-s02-and-s06-resolved), [06 §3](06-checkpoint-2026-10-09.md#3-decisions-made-since-0304) |
 | Developer install of the DLL, `vcam` CLI checks | [03 §4.3](03-progress-phases-2-3.md#43-phase-3), [04 §6](04-session-2026-10-09.md#6-how-to-resume) |
 | Never `Path::exists` on a pipe | [05 §2](05-progress-phases-4-5.md#changes-outside-the-app-crate) |
@@ -146,6 +150,6 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 
 ## 5. Adding a document
 
-Give it the next free number (`12-...`), state at the top what it continues and its date, and
+Give it the next free number (`13-...`), state at the top what it continues and its date, and
 add a row to §2 here. If it makes something in an earlier document out of date, add a row to
 "Which documents are current" as well.
