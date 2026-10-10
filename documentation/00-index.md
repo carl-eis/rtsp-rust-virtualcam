@@ -4,7 +4,7 @@ The entry point for the documentation folder. Start here, read the documents mar
 **current** for the state of the project, and use the jump tables to go straight to a topic.
 Section numbers (§) refer to the headings inside each document.
 
-## 1. Where the project stands (as of 2026-10-10, v1.1.0)
+## 1. Where the project stands (as of 2026-10-10, v1.2.0)
 
 - **Windows:** plan phases 0–7 are built; phase 8 (GPU path, soak, fuzzing, crash reports) has
   not started. The GPU path was re-planned for the cross-platform code in
