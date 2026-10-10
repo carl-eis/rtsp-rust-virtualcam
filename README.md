@@ -38,7 +38,7 @@ app that was already open so it sees the new camera.
 
 ## Status
 
-Early development; version 1.2.1.
+Early development; version 1.3.0.
 
 | | Windows 11 | Linux | macOS |
 |---|---|---|---|
