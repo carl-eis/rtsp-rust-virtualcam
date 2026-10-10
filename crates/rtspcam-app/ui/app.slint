@@ -246,11 +246,13 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // A fixed width, so the live stats changing don't resize the preview. 280px still
+                // leaves the preview its minimum width at the window's minimum width.
                 Label {
+                    width: 280px;
                     text: root.info;
                     wrap: word-wrap;
                     vertical-alignment: top;
-                    horizontal-stretch: 1;
                 }
             }
         }
