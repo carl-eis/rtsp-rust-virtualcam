@@ -8,6 +8,8 @@
 // Windows only (ignored elsewhere): a release build is a windowed program without a console.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(feature = "discord")]
+mod discord;
 mod ui;
 
 use std::process::ExitCode;
@@ -99,8 +101,21 @@ fn run() -> anyhow::Result<ExitCode> {
         ..ManagerOptions::default()
     };
     let manager = CameraManager::start(backend, options)?;
+    // Its own file and runtime; nothing starts unless auto-login is on (documentation/19 §3).
+    #[cfg(feature = "discord")]
+    let discord = discord::Discord::open();
+    #[cfg(feature = "discord")]
+    if let Some(discord) = &discord {
+        discord.auto_login();
+    }
     if headless {
-        run_headless(&store, &config, manager)?;
+        run_headless(
+            &store,
+            &config,
+            manager,
+            #[cfg(feature = "discord")]
+            discord,
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     ui::run(ui::RunOptions {
@@ -111,6 +126,8 @@ fn run() -> anyhow::Result<ExitCode> {
         autostart: rtspcam_platform::autostart(),
         cameras_supported,
         start_minimized: minimized,
+        #[cfg(feature = "discord")]
+        discord,
     })?;
     Ok(ExitCode::SUCCESS)
 }
@@ -119,6 +136,7 @@ fn run_headless(
     store: &ConfigStore,
     config: &rtspcam_core::Config,
     manager: CameraManager,
+    #[cfg(feature = "discord")] discord: Option<discord::Discord>,
 ) -> anyhow::Result<()> {
     manager.apply(config);
 
@@ -135,6 +153,29 @@ fn run_headless(
         })?
     };
 
+    // Hand edits to discord.json apply live too.
+    #[cfg(feature = "discord")]
+    let (bot, _discord_watcher) = match discord {
+        Some(discord) => {
+            let bot = discord.bot.clone();
+            let mut current = discord.settings;
+            let watcher = discord
+                .store
+                .watch(move |result| match result {
+                    Ok(settings) => {
+                        tracing::info!("discord.json changed on disk");
+                        discord::apply_change(&bot, &current, &settings);
+                        current = settings;
+                    }
+                    Err(e) => tracing::error!(error = %e, "discord.json is invalid; ignoring it"),
+                })
+                .map_err(|e| tracing::warn!(error = %e, "not watching discord.json"))
+                .ok();
+            (Some(discord.bot), watcher)
+        }
+        None => (None, None),
+    };
+
     tracing::info!("running; press Ctrl+C to quit");
     // SIGTERM (`kill`, `systemctl stop`, logout) quits the same way, so the cameras go too.
     manager.handle().block_on(async {
@@ -146,6 +187,12 @@ fn run_headless(
     tracing::info!("quitting");
 
     drop(watcher);
+    // The bot first (leave the channel, close the connection), then the cameras.
+    #[cfg(feature = "discord")]
+    if let Some(bot) = bot {
+        drop(_discord_watcher);
+        bot.shutdown(SHUTDOWN_LIMIT);
+    }
     match Arc::try_unwrap(manager) {
         Ok(manager) => manager.shutdown(SHUTDOWN_LIMIT),
         Err(_) => tracing::warn!("the manager is still shared; ending the process instead"),

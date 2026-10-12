@@ -22,10 +22,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
-pub use migrate::CURRENT_VERSION;
+pub use migrate::{CURRENT_VERSION, Migration};
 pub use picture::{Crop, MAX_CROP_PERCENT, OnDisconnect, Picture, Rotation};
 pub use protocol::Protocol;
-pub use store::{ConfigStore, CopyThenRename, FileReplace};
+pub use store::{ConfigStore, CopyThenRename, Document, FileReplace, JsonStore};
 pub use templates::{BRAND_TEMPLATES, BrandTemplate, find_template};
 pub use transfer::{ExportError, ImportReport, export_streams, import_streams, unique_stream_name};
 pub use url::{StreamUrl, UrlError, parse_stream_url};

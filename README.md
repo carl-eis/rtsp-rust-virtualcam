@@ -48,6 +48,7 @@ Early development; version 1.6.0.
 | Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
 | Start at login | Run key | XDG autostart | LaunchAgent |
 | Package | Inno Setup installer (not yet tried on a clean PC) | `.deb`, `.rpm` | none |
+| Discord tab (a bot sends a device's sound to a voice channel and plays the channel) | logging in, joining (with DAVE) and following checked against Discord; **not yet heard by a person** | builds; not yet run | builds; not yet run |
 
 Not built yet: the rest of the hardening (soak tests, compatibility matrix, fuzzing, crash
 reports; [08.1 §7](documentation/08.1-Plan-Phase-8.md#7-the-rest-of-phase-8-in-short)),
@@ -73,6 +74,12 @@ of checks that still need a person.
 - **Import / export** (**File > Export / Import streams**) to move streams between PCs
   (passwords are not included).
 - **Tray:** `--minimized` starts in the tray, `--headless` runs without a window (Ctrl+C quits).
+- **Discord tab:** a Discord bot that sends any audio input (a microphone, VB-Cable, a line
+  input, or on Windows what the PC plays) into a voice channel, with a noise gate, a level meter
+  and mute (also in the tray), and can play the channel on your speakers. Per server it can
+  join a channel after logging in or follow a person from channel to channel; in stage
+  channels it asks to speak. Starts muted; nothing runs until you log in. Setup:
+  [documentation/manual/discord.md](documentation/manual/discord.md).
 - **Hardware decoding** (Windows): H.264 and H.265 are decoded on the graphics card when it can,
   and pictures are shrunk there to the size apps ask for. **Settings** shows the card and can
   turn it off; the stream details say `D3D11` when it is used. About 5 % of one CPU core per
@@ -132,6 +139,10 @@ All OSes:
 - [Rust](https://rustup.rs/) 1.92 or later. The toolchain is pinned in `rust-toolchain.toml`,
   and rustup installs it automatically.
 - A C and C++ compiler (OpenH264 is built from source).
+- [CMake](https://cmake.org/) on `PATH` (or in the `CMAKE` variable): libopus, for the Discord
+  tab, is built from source. Visual Studio's C++ workload includes one
+  (`...\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`). To build without
+  the Discord tab (and without CMake): `cargo build -p rtspcam-app --no-default-features`.
 
 Windows:
 
@@ -145,8 +156,9 @@ Windows:
 
 Linux (checked on Debian bookworm):
 
-- Build: `build-essential`, `pkg-config` and `libfontconfig1-dev` (Slint's font lookup links
-  fontconfig); no other GUI `-dev` packages are needed.
+- Build: `build-essential`, `pkg-config`, `cmake`, `libfontconfig1-dev` (Slint's font lookup
+  links fontconfig) and `libasound2-dev` (audio for the Discord tab); no other GUI `-dev`
+  packages are needed.
 - Run: the X11 or Wayland client libraries, loaded at run time. On a minimal X11 system:
   `libx11-6 libx11-xcb1 libxcursor1 libxrandr2 libxi6 libxkbcommon-x11-0`, plus fonts
   (`fonts-dejavu-core`) and OpenGL (`libgl1 libegl1`; without it Slint draws in software).
@@ -236,6 +248,8 @@ crates/
                       autostart, single instance, frame transport, MF decoder (and D3D11)
                       (windows/, linux/, macos/, unix/)
   rtspcam-engine/     camera manager, preview, status, stream form, overlay (portable)
+  rtspcam-audio/      audio devices, capture/playback at 48 kHz stereo, resampling, gate, meter
+  rtspcam-discord/    the Discord bot: serenity gateway + songbird voice (DAVE), session state
   rtspcam-app/        rtspcam: the Slint desktop app (ui/*.slint + src/ui/)
   rtspcam-cli/        rtspcam-cli: developer tool (`vcam` subcommand Windows-only)
   rtspcam-vcam/       rtspcam_vcam.dll: the Media Foundation custom media source (Windows)
@@ -249,7 +263,8 @@ documentation/        plans and progress records (start at 00-index.md)
 
 ## Configuration
 
-Everything lives in one JSON file, `config.json`, in the per-user config folder:
+Everything lives in one JSON file, `config.json`, in the per-user config folder (the Discord
+tab keeps its own settings, and the bot token, in `discord.json` next to it):
 
 | | Config | Logs |
 |---|---|---|

@@ -8,8 +8,7 @@ use std::{fmt, fs};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use super::Config;
-use super::store::{ConfigStore, parse};
+use super::store::{Document, JsonStore, parse};
 use crate::error::ConfigError;
 
 /// Editors and our own atomic save produce bursts of events; wait this long for quiet.
@@ -20,7 +19,7 @@ enum Msg {
     Stop,
 }
 
-/// Watches `config.json` and calls back with the reloaded config when it changes on disk.
+/// Watches a settings file (such as `config.json`) and calls back with the reloaded config when it changes on disk.
 ///
 /// Saves made through the same [`ConfigStore`] (or a clone of it) are not reported. Invalid
 /// JSON is reported as an `Err`, so the app can show it and keep using the last good config.
@@ -37,11 +36,11 @@ impl fmt::Debug for ConfigWatcher {
     }
 }
 
-impl ConfigStore {
-    /// Starts watching the config file. `on_change` runs on a background thread.
+impl<T: Document> JsonStore<T> {
+    /// Starts watching the file. `on_change` runs on a background thread.
     pub fn watch<F>(&self, on_change: F) -> Result<ConfigWatcher, ConfigError>
     where
-        F: FnMut(Result<Config, ConfigError>) + Send + 'static,
+        F: FnMut(Result<T, ConfigError>) + Send + 'static,
     {
         // Watch the folder, not the file: an atomic replace swaps the file out from under a
         // file watch.
@@ -73,9 +72,9 @@ impl ConfigStore {
     }
 }
 
-fn run<F>(store: ConfigStore, rx: mpsc::Receiver<Msg>, mut on_change: F)
+fn run<T: Document, F>(store: JsonStore<T>, rx: mpsc::Receiver<Msg>, mut on_change: F)
 where
-    F: FnMut(Result<Config, ConfigError>),
+    F: FnMut(Result<T, ConfigError>),
 {
     let file_name: Option<OsString> = store.path().file_name().map(Into::into);
     let concerns_config = |event: &notify::Event| {
@@ -120,7 +119,7 @@ where
             continue;
         }
         tracing::info!(path = %store.path().display(), "config changed on disk, reloading");
-        on_change(parse(store.path(), &bytes).map(|(config, _)| config));
+        on_change(parse::<T>(store.path(), &bytes).map(|(config, _)| config));
     }
 }
 
@@ -140,6 +139,7 @@ mod tests {
     use std::sync::mpsc::Receiver;
 
     use super::*;
+    use crate::config::{Config, ConfigStore};
 
     const WAIT: Duration = Duration::from_secs(5);
 

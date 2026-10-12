@@ -1,4 +1,4 @@
-# 19 — Progress: drift and catching up to live, and no lost request tokens (issues #20, #21)
+# 22 — Progress: drift and catching up to live, and no lost request tokens (issues #20, #21)
 
 Date: 2026-10-12. Builds [17 §3.1](17-realtimewebcam-comparison.md#31-a-latency-cap-that-catches-up-to-live-medium-measure-first)
 (issue #20) and [17 §3.3](17-realtimewebcam-comparison.md#33-never-lose-a-request-token-small-bug-fix)

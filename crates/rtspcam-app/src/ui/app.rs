@@ -38,7 +38,13 @@ pub(crate) struct RunOptions {
     pub(crate) cameras_supported: bool,
     /// `--minimized`: start in the tray (or minimized, if "Minimize to tray" is off).
     pub(crate) start_minimized: bool,
+    /// The Discord bot and `discord.json` (`None` if the settings folder is unknown).
+    #[cfg(feature = "discord")]
+    pub(crate) discord: Option<crate::discord::Discord>,
 }
+
+/// Where the open tab is remembered (in `config.json`'s settings, as an extra field).
+const TAB_KEY: &str = "window_tab";
 
 /// Where the answer to a message or question goes.
 pub(crate) type Reply = Box<dyn FnOnce(bool)>;
@@ -69,6 +75,8 @@ pub(crate) struct App {
     pub(crate) picture_dialog: RefCell<Option<picture_dialog::State>>,
     /// Bumped by each "Test connection", so a late answer for an earlier test is ignored.
     pub(crate) test_generation: Arc<AtomicU64>,
+    #[cfg(feature = "discord")]
+    pub(crate) discord: Option<super::discord_tab::DiscordUi>,
 }
 
 thread_local! {
@@ -95,11 +103,15 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
         autostart,
         cameras_supported,
         start_minimized,
+        #[cfg(feature = "discord")]
+        discord,
     } = options;
 
     let ui = MainWindow::new()?;
     let rows = Rc::new(VecModel::default());
     ui.set_rows(ModelRc::from(rows.clone()));
+    let tab = saved_tab(&config);
+    ui.set_tab(tab);
 
     let app = Rc::new(App {
         ui: ui.as_weak(),
@@ -120,6 +132,8 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
         discover_dialog: RefCell::default(),
         picture_dialog: RefCell::default(),
         test_generation: Arc::default(),
+        #[cfg(feature = "discord")]
+        discord: discord.map(super::discord_tab::DiscordUi::new),
     });
     CURRENT.with(|c| *c.borrow_mut() = Rc::downgrade(&app));
 
@@ -129,6 +143,11 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
     discover_dialog::connect(&app);
     picture_dialog::connect(&app);
     settings_dialog::connect(&app);
+    #[cfg(feature = "discord")]
+    {
+        super::discord_tab::connect(&app);
+        super::discord_tab::init(&app, &ui);
+    }
     app.add_tray();
 
     // A second launch asks this copy to come forward.
@@ -167,14 +186,34 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
     // Hidden in the tray the window isn't visible, so run until Quit, not until no window.
     slint::run_event_loop_until_quit()?;
 
-    // The window is gone: take the tray icon away, then shut the cameras down in order.
+    // The window is gone: take the tray icon away, then shut down in order: the Discord bot
+    // (leave the channel, close the connection), then the cameras.
     let _ = ui.hide();
     app.timers.borrow_mut().clear();
     app.tray.borrow_mut().take();
     app.preview.set(None);
+    if ui.get_tab() != tab {
+        app.remember_tab(ui.get_tab());
+    }
+    #[cfg(feature = "discord")]
+    if let Some(discord) = &app.discord {
+        discord.bot.shutdown(super::core::SHUTDOWN_LIMIT);
+    }
     app.core.shutdown();
     drop(instance);
     Ok(())
+}
+
+/// The tab that was open when the app last quit.
+fn saved_tab(config: &Config) -> i32 {
+    config
+        .settings
+        .extra
+        .get(TAB_KEY)
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|t| i32::try_from(t).ok())
+        .filter(|t| (0..=1).contains(t))
+        .unwrap_or(0)
 }
 
 /// Brings the window back from the tray or the taskbar, in front.
@@ -268,6 +307,15 @@ impl App {
             }
         });
         let me = Rc::downgrade(self);
+        tray.on_toggle_discord_mute(move || {
+            #[cfg(feature = "discord")]
+            if let Some(app) = me.upgrade() {
+                super::discord_tab::toggle_mute(&app);
+            }
+            #[cfg(not(feature = "discord"))]
+            let _ = &me;
+        });
+        let me = Rc::downgrade(self);
         tray.on_quit(move || {
             if let Some(app) = me.upgrade() {
                 app.quit();
@@ -306,6 +354,27 @@ impl App {
             format!("{APP_DISPLAY_NAME} - {n} {cameras} active, {in_use} in use")
         } else {
             format!("{APP_DISPLAY_NAME} - {n} {cameras} active")
+        }
+    }
+
+    /// Shows "Discord: Mute"/"Unmute" in the tray menu while the bot is in a channel.
+    #[cfg(feature = "discord")]
+    pub(crate) fn update_tray_discord(&self) {
+        if let (Some(tray), Some(discord)) = (self.tray.borrow().as_ref(), &self.discord) {
+            tray.set_discord_in_voice(discord.in_voice());
+            tray.set_discord_muted(discord.muted());
+        }
+    }
+
+    /// Saves which tab is open, for the next start.
+    fn remember_tab(self: &Rc<Self>, tab: i32) {
+        let mut config = self.core.config.borrow().clone();
+        config
+            .settings
+            .extra
+            .insert(TAB_KEY.into(), serde_json::Value::from(tab));
+        if let Err(e) = self.core.save(config) {
+            tracing::warn!(error = %e, "could not remember the open tab");
         }
     }
 
@@ -585,6 +654,8 @@ impl App {
             tray.set_tip(self.tooltip().into());
             tray.set_paused(self.core.is_paused());
         }
+        #[cfg(feature = "discord")]
+        super::discord_tab::tick(self);
         // Do not hold streams open for a window nobody can see, and open the preview of a
         // camera that has just been created.
         self.sync_preview();

@@ -7,7 +7,7 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::migrate::migrate;
+use super::migrate::{CURRENT_VERSION, MIGRATIONS, migrate};
 use super::{Config, StreamConfig};
 use crate::error::ConfigError;
 
@@ -91,7 +91,7 @@ pub fn import_streams(config: &mut Config, text: &str) -> Result<ImportReport, E
     if !doc.is_object() {
         return Err(ExportError::Invalid("expected a JSON object".to_owned()));
     }
-    migrate(&mut doc)?;
+    migrate(&mut doc, CURRENT_VERSION, MIGRATIONS)?;
     let incoming: Config =
         serde_json::from_value(doc).map_err(|e| ExportError::Invalid(e.to_string()))?;
     if incoming.streams.is_empty() {

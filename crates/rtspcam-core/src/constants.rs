@@ -12,6 +12,9 @@ pub const APP_DISPLAY_NAME: &str = "RTSP Cam";
 /// File name of the JSON configuration.
 pub const CONFIG_FILE_NAME: &str = "config.json";
 
+/// File name of the Discord tab's settings, next to [`CONFIG_FILE_NAME`].
+pub const DISCORD_FILE_NAME: &str = "discord.json";
+
 /// CLSID of the Media Foundation custom media source in `rtspcam_vcam.dll`.
 pub const VCAM_SOURCE_CLSID: Uuid = uuid::uuid!("d533721f-03a1-4d9e-b562-31e82d1ed87f");
 

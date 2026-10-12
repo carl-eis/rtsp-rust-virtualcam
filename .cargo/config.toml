@@ -2,3 +2,12 @@
 # need no Visual C++ redistributable.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[env]
+# libopus (Discord voice, documentation/19) is built from the copy inside libopus_sys and
+# linked statically on every OS, so packages and the installer need no Opus library. Building
+# it needs CMake.
+LIBOPUS_BUNDLED = "1"
+LIBOPUS_STATIC = "1"
+# ... with the same static C runtime as the Rust side on Windows.
+CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc = { value = "tools/cmake/msvc-static-crt.cmake", relative = true }

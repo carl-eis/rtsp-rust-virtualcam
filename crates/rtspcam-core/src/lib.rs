@@ -2,6 +2,8 @@
 //!
 //! - [`config`]: the JSON configuration model (`config.json`, see [`paths`]), validation,
 //!   atomic persistence, schema migrations and (with the `watch` feature) file watching.
+//! - [`discord`]: `discord.json`, the Discord tab's settings (its own file next to
+//!   `config.json`).
 //! - [`secret`]: encrypted strings used for stream passwords, and the hook for the OS store
 //!   that encrypts them.
 //! - [`constants`]: names and identifiers shared by the app and the virtual camera DLL.
@@ -17,6 +19,7 @@
 
 pub mod config;
 pub mod constants;
+pub mod discord;
 pub mod error;
 #[cfg(feature = "logging")]
 pub mod logging;

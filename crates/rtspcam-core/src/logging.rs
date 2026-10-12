@@ -84,9 +84,22 @@ impl LogGuard {
         if self.env_override {
             return;
         }
-        if let Err(e) = self.filter.reload(EnvFilter::new(level.as_str())) {
+        if let Err(e) = self.filter.reload(level_filter(level)) {
             tracing::warn!(error = %e, "could not change the log level");
         }
+    }
+}
+
+/// The filter for a configured level. The Discord libraries are held back: at debug level
+/// they log whole gateway payloads (documentation/19 §4 D2 step 8). [`LOG_ENV_VAR`] can still
+/// turn them up.
+fn level_filter(level: LogLevel) -> EnvFilter {
+    match level {
+        LogLevel::Error | LogLevel::Warn => EnvFilter::new(level.as_str()),
+        _ => EnvFilter::new(format!(
+            "{},serenity=warn,songbird=info,tokio_tungstenite=warn,tungstenite=warn",
+            level.as_str()
+        )),
     }
 }
 
@@ -113,7 +126,7 @@ pub fn init(opts: &LogOptions) -> Result<LogGuard, LoggingError> {
         .ok()
         .and_then(|v| EnvFilter::try_new(v).ok());
     let env_override = env_filter.is_some();
-    let filter = env_filter.unwrap_or_else(|| EnvFilter::new(opts.level.as_str()));
+    let filter = env_filter.unwrap_or_else(|| level_filter(opts.level));
     let (filter, handle) = reload::Layer::new(filter);
 
     let file_layer = tfmt::layer()
