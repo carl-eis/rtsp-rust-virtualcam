@@ -325,11 +325,14 @@ pub(crate) fn view(store: &ConfigStore, args: ViewArgs) -> anyhow::Result<ExitCo
             let state = p.current_status();
             let detail = match &state {
                 StreamState::Streaming(s) => format!(
-                    " | {:.1} Mbit/s, latency {:.1} ms, decode {:.2} ms, {} decoded, {} errors, {} lost | {}",
+                    " | {:.1} Mbit/s, latency {:.1} ms, drift {:.0} ms, decode {:.2} ms, {} decoded, {} skipped, {} resyncs, {} errors, {} lost | {}",
                     s.bitrate as f64 / 1e6,
                     s.latency.as_secs_f64() * 1000.0,
+                    s.drift.as_secs_f64() * 1000.0,
                     s.decode_time.as_secs_f64() * 1000.0,
                     s.frames_decoded,
+                    s.frames_skipped,
+                    s.resyncs,
                     s.decode_errors,
                     s.packets_lost,
                     s.decoder

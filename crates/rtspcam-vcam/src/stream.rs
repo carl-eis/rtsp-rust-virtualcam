@@ -23,7 +23,7 @@ use windows::Win32::Media::MediaFoundation::{
     IMF2DBuffer, IMFAsyncCallback, IMFAsyncResult, IMFAttributes, IMFMediaEvent,
     IMFMediaEventGenerator_Impl, IMFMediaEventQueue, IMFMediaSource, IMFMediaStream,
     IMFMediaStream_Impl, IMFMediaStream2, IMFMediaStream2_Impl, IMFSample, IMFStreamDescriptor,
-    IMFVideoSampleAllocatorEx, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, MEMediaSample,
+    IMFVideoSampleAllocatorEx, MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS, MEError, MEMediaSample,
     MEStreamStarted, MEStreamStopped, MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES,
     MF_DEVICESTREAM_FRAMESERVER_SHARED, MF_DEVICESTREAM_STREAM_CATEGORY, MF_DEVICESTREAM_STREAM_ID,
     MF_E_INVALIDREQUEST, MF_E_SHUTDOWN, MF_STREAM_STATE, MF_STREAM_STATE_RUNNING,
@@ -547,11 +547,51 @@ fn deliver(queue: &IMFMediaEventQueue, format: VideoFormat, camera: Option<Uuid>
             }
         };
         let token = token.as_ref().map(|t| &t.0);
-        if let Err(e) = send_sample(queue, pool.as_ref(), data, time, interval, token) {
-            log!("could not deliver a sample: {e}");
-            if e.code() == MF_E_SHUTDOWN {
-                return;
-            }
+        let sent = send_or_report(queue, |pool_allowed| {
+            let pool = pool.as_ref().filter(|_| pool_allowed);
+            send_sample(queue, pool, data, time, interval, token)
+        });
+        if !sent {
+            return;
+        }
+    }
+}
+
+/// Answers one request with `send(pool_allowed)`. If that fails, retries once without the pool
+/// (a one-off sample), and if that fails too, queues `MEError` so Frame Server closes and
+/// reopens the stream: a request without a sample is lost for good, and Frame Server keeps only
+/// a few open, so after a few of those the stream would wait forever. Returns `false` once the
+/// stream has shut down.
+fn send_or_report(
+    queue: &IMFMediaEventQueue,
+    mut send: impl FnMut(bool) -> windows_core::Result<()>,
+) -> bool {
+    let error = match send(true).or_else(|e| {
+        if e.code() == MF_E_SHUTDOWN {
+            return Err(e);
+        }
+        log!("could not deliver a sample ({e}); trying a new one");
+        send(false)
+    }) {
+        Ok(()) => return true,
+        Err(e) if e.code() == MF_E_SHUTDOWN => return false,
+        Err(e) => e,
+    };
+    log!("could not deliver a sample: {error}; reporting the error");
+    // SAFETY: valid queue; no payload.
+    let queued = unsafe {
+        queue.QueueEventParamVar(
+            MEError.0 as u32,
+            &GUID::zeroed(),
+            error.code(),
+            std::ptr::null(),
+        )
+    };
+    match queued {
+        Ok(()) => true,
+        Err(e) => {
+            log!("could not report the error: {e}");
+            e.code() != MF_E_SHUTDOWN
         }
     }
 }
@@ -646,6 +686,8 @@ pub(crate) fn as_interface(stream: &windows_core::ComObject<MediaStream>) -> IMF
 
 #[cfg(test)]
 mod tests {
+    use windows::Win32::Foundation::E_OUTOFMEMORY;
+
     use super::*;
 
     #[test]
@@ -679,5 +721,58 @@ mod tests {
         // A second without requests: follows the clock again.
         assert_eq!(t.next(20_000_000), 20_000_000);
         assert_eq!(t.next(20_333_333), 20_333_333);
+    }
+
+    /// The next event on `queue`, if one is waiting.
+    fn next_event(queue: &IMFMediaEventQueue) -> Option<(u32, HRESULT)> {
+        use windows::Win32::Media::MediaFoundation::MF_EVENT_FLAG_NO_WAIT;
+        // SAFETY: a valid queue; NO_WAIT returns at once.
+        unsafe {
+            let event = queue.GetEvent(MF_EVENT_FLAG_NO_WAIT.0).ok()?;
+            Some((event.GetType().ok()?, event.GetStatus().ok()?))
+        }
+    }
+
+    fn event_queue() -> IMFMediaEventQueue {
+        // SAFETY: creates a new event queue.
+        unsafe { MFCreateEventQueue().unwrap() }
+    }
+
+    #[test]
+    fn a_failed_sample_is_retried_without_the_pool() {
+        let queue = event_queue();
+        let mut tries = Vec::new();
+        let sent = send_or_report(&queue, |pool| {
+            tries.push(pool);
+            if pool {
+                Err(E_OUTOFMEMORY.into())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(sent);
+        assert_eq!(tries, [true, false]);
+        assert_eq!(next_event(&queue), None, "no error reported");
+    }
+
+    #[test]
+    fn a_sample_that_cannot_be_sent_queues_me_error() {
+        let queue = event_queue();
+        let sent = send_or_report(&queue, |_| Err(E_OUTOFMEMORY.into()));
+        assert!(sent, "delivery goes on");
+        assert_eq!(next_event(&queue), Some((MEError.0 as u32, E_OUTOFMEMORY)));
+    }
+
+    #[test]
+    fn shutdown_ends_delivery_without_a_retry() {
+        let queue = event_queue();
+        let mut tries = 0;
+        let sent = send_or_report(&queue, |_| {
+            tries += 1;
+            Err(MF_E_SHUTDOWN.into())
+        });
+        assert!(!sent);
+        assert_eq!(tries, 1);
+        assert_eq!(next_event(&queue), None);
     }
 }

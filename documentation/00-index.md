@@ -25,6 +25,9 @@ Section numbers (§) refer to the headings inside each document.
   still uses `UnsupportedCameras`.
 - **Output formats:** 60 fps and a "Source" size (the camera's own) were added for issue #13
   ([18](18-progress-issue-13.md), 2026-10-10).
+- **Latency:** streams measure their drift behind live and catch up past a 350 ms cap; the DLL
+  reports `MEError` instead of losing a request token (issues #20, #21,
+  [22](22-progress-issues-20-21.md), 2026-10-12).
 - **Discord Tab** (`feat/audio-tab`, [19](19-discord-tab-plan.md)): a Discord voice bot in a
   second tab. Phases D0–D4 ([20](20-progress-discord-tab.md)) and D5, D6, D8
   ([21](21-progress-discord-tab-d5-d8.md)) are built, 2026-10-12: send a device's sound, hear
@@ -59,6 +62,7 @@ Section numbers (§) refer to the headings inside each document.
 | 19 | [19-discord-tab-plan.md](19-discord-tab-plan.md) | Plan | **"Discord Tab"**: a Discord voice bot in a new tab (features from Discord Audio Stream Bot, DAVE approach from TheEpicAudioStreamer), phases D0–D8 | **Current** plan on `feat/audio-tab`: songbird (DAVE) + serenity, `rtspcam-audio` and `rtspcam-discord` crates, the tab, receive, auto-join/follow, camera audio as a source (D7, not started) |
 | 20 | [20-progress-discord-tab.md](20-progress-discord-tab.md) | Progress | Discord Tab phases D0–D4 of 19 | **Current** D0 results (versions, loopback, build cost, CRT fix), `rtspcam-audio`, `rtspcam-discord` (session state machine, backend), `discord.json` (`JsonStore`), the tab |
 | 21 | [21-progress-discord-tab-d5-d8.md](21-progress-discord-tab-d5-d8.md) | Progress | Discord Tab phases D5, D6, D8 of 19 | **Current** checks against Discord, the missing PCM codec (nothing was sent), hearing the channel (mix, decode only while listening), per-server auto-join and follow, stage speaker requests, leave server, packaging checks |
+| 22 | [22-progress-issues-20-21.md](22-progress-issues-20-21.md) | Progress | Issues #20, #21 (17 §3.1, §3.3) | **Current** drift in `StreamStats`, latency cap (skip, then resync at a key frame), `MEError` when a sample can't be sent |
 
 ### Which documents are current
 
@@ -79,7 +83,8 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | "CPU per stage was never measured", "decoding is software today" (08.1 §1, 03 §4.2) | Measured and built: [14 §3](14-progress-phase-8.md#3-measurements) |
 | Low-hanging fixes 15 §4.1–4.3 and 4.5 (proposed) | Built: [16](16-progress-issue-12.md); 15 §4.4 still open |
 | Advertised formats "1080p/720p/480p at 30 and 15 fps", 24 media types (03, 15, 16) | 60 fps added and a "Source" size: 36 (or 48) types, [18 §1](18-progress-issue-13.md#1-what-was-done) |
-| Next free document number (04, 05, 06, 07, 13) | 21. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
+| Latency cap and lost request token, 17 §3.1 and §3.3 (proposed) | Built: [22](22-progress-issues-20-21.md) |
+| Next free document number (04, 05, 06, 07, 13) | 23. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
 ## 3. Reading order by task
 
@@ -148,6 +153,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | GPU path (D3D11 decode, early downscale): the plan, then what was built | [08.1](08.1-Plan-Phase-8.md), [14](14-progress-phase-8.md) |
 | Measuring CPU per stage (`rtspcam-cli bench`, `rtspcam_core::profile`) | [14 §1](14-progress-phase-8.md#80-measuring-rtspcam-core-rtspcam-platform-rtspcam-cli), [14 §3](14-progress-phase-8.md#3-measurements) |
 | Colour range, CPU scaling, MJPEG gaps | [03 §6](03-progress-phases-2-3.md#6-known-issues) |
+| Drift behind live, latency cap (skip, resync) | [22 §1](22-progress-issues-20-21.md#1-drift-and-the-latency-cap-issue-20) |
 
 ### Windows virtual camera (DLL and IPC)
 
@@ -161,6 +167,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Never `Path::exists` on a pipe | [05 §2](05-progress-phases-4-5.md#changes-outside-the-app-crate) |
 | Frame pacing (high-resolution timer), sample timestamps, offered formats, sample pool | [16 §1](16-progress-issue-12.md#1-what-was-done), measurements in [16 §2](16-progress-issue-12.md#2-measurements) |
 | 60 fps, the "Source" size and when a camera is re-created for it | [18 §1](18-progress-issue-13.md#1-what-was-done), measurements in [18 §2](18-progress-issue-13.md#2-measurements) |
+| A sample that can't be sent: retry, then `MEError` | [22 §2](22-progress-issues-20-21.md#2-meerror-instead-of-a-lost-request-token-issue-21) |
 
 ### Camera manager and UI
 

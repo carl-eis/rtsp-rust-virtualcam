@@ -10,7 +10,8 @@ use rtspcam_core::config::{ConfigStore, StreamConfig};
 use rtspcam_core::constants::APP_DISPLAY_NAME;
 use rtspcam_core::{Config, Theme, paths};
 use rtspcam_engine::{
-    Activity, CameraManager, CameraStatus, VcamState, frame_rate_note, output_summary,
+    Activity, CameraManager, CameraStatus, LatencyReport, VcamState, frame_rate_note,
+    output_summary,
 };
 use rtspcam_pipeline::StreamState;
 use rtspcam_platform::{Autostart, InstanceLock};
@@ -65,6 +66,8 @@ pub(crate) struct App {
     told_about_discord: Cell<bool>,
     last_press: Cell<Option<(i32, Instant)>>,
     timers: RefCell<Vec<Timer>>,
+    /// The selected stream's latency lines (rebuilt every couple of seconds).
+    latency: RefCell<LatencyReport>,
     /// Where the open message sheet's answer goes.
     pub(crate) message_reply: RefCell<Option<Reply>>,
     pub(crate) stream_dialog: RefCell<Option<stream_dialog::State>>,
@@ -121,6 +124,7 @@ pub(crate) fn run(options: RunOptions) -> anyhow::Result<()> {
         previewing: Cell::new(None),
         tray: RefCell::new(None),
         told_about_discord: Cell::new(false),
+        latency: RefCell::default(),
         last_press: Cell::new(None),
         timers: RefCell::default(),
         message_reply: RefCell::default(),
@@ -581,20 +585,19 @@ impl App {
             ),
             String::new(),
         ];
-        match status {
+        match &status {
             None if !s.enabled => lines.push("Disabled. Press Start to turn it on.".to_owned()),
             None => lines.push("Starting...".to_owned()),
             Some(st) => {
                 lines.push(st.activity.summary());
                 if let Activity::Running(StreamState::Streaming(stats)) = &st.activity {
                     lines.push(format!(
-                        "{} {}x{}, {:.1} fps, {:.1} Mbit/s, {} ms, {}",
+                        "{} {}x{}, {:.1} fps, {:.1} Mbit/s, {}",
                         stats.codec,
                         stats.width,
                         stats.height,
                         stats.fps,
                         stats.bitrate as f64 / 1e6,
-                        stats.latency.as_millis(),
                         stats.decoder
                     ));
                     lines.extend(frame_rate_note(stats.fps, s.output.fps));
@@ -619,6 +622,16 @@ impl App {
                     }
                 }
             }
+        }
+        let streaming = match status.as_ref().map(|st| &st.activity) {
+            Some(Activity::Running(StreamState::Streaming(stats))) => Some(stats),
+            _ => None,
+        };
+        let mut latency = self.latency.borrow_mut();
+        let report = latency.update(s.id, streaming, Instant::now());
+        if !report.is_empty() {
+            lines.push(String::new());
+            lines.extend(report.iter().cloned());
         }
         let text = lines.join("\n");
         if ui.get_info() != text.as_str() {
