@@ -15,9 +15,14 @@ Date: 2026-10-12. Builds [17 §3.1](17-realtimewebcam-comparison.md#31-a-latency
   network, socket buffers and our own `channel(8)` to the decoder, which is the queue that builds
   up when the decoder is slow. The anchor resets on every new session (`DecodeMsg::Start`) and
   after a resync.
-- **Shown as** `StreamStats::drift` (average lag over the last second), in the stream details
-  ("drift N ms") and in `rtspcam rtsp` output. `frames_skipped` and `resyncs` count catch-ups;
-  the details show a line only once something was skipped.
+- **Shown as** `StreamStats::drift` (average lag over the last second) and in `rtspcam rtsp`
+  output. `frames_skipped` and `resyncs` count catch-ups.
+- **Latency report** in the stream details (`rtspcam-engine/src/status.rs`, `LatencyReport`):
+  arrival to picture and decoder time, drift with its trend (rising, falling or steady, from
+  the oldest and newest third of the last 30 s; "measuring" for the first 10 s) and its range,
+  and the catch-up counts. It changes at most every 2 s, and it only reads the stats the
+  pipeline already sends once a second, so it adds no polling. It starts over when another
+  stream is selected or the stream stops.
 - **Level 1, skip:** `PipelineOptions::latency_cap` (default 350 ms, `None` only measures).
   While a picture is more than the cap behind, it is decoded but not published to the
   `FrameBus` (saving scaling and conversion in the consumers), until the lag is back within

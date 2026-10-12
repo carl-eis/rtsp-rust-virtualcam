@@ -82,6 +82,9 @@ impl Backoff {
     }
 }
 
+/// The default [`PipelineOptions::latency_cap`].
+pub const DEFAULT_LATENCY_CAP: Duration = Duration::from_millis(350);
+
 /// How a pipeline connects, decodes and recovers.
 #[derive(Debug, Clone)]
 pub struct PipelineOptions {
@@ -107,7 +110,7 @@ impl PipelineOptions {
             stall_timeout: Duration::from_secs(5),
             first_picture_timeout: Duration::from_secs(15),
             backoff: BackoffConfig::default(),
-            latency_cap: Some(Duration::from_millis(350)),
+            latency_cap: Some(DEFAULT_LATENCY_CAP),
         }
     }
 }
