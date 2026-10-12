@@ -8,6 +8,8 @@
 
 mod app;
 mod core;
+#[cfg(feature = "discord")]
+mod discord_tab;
 mod discover_dialog;
 mod files;
 mod message;

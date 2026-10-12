@@ -1,0 +1,41 @@
+[package]
+name = "rtspcam-discord"
+description = "RTSP Cam's Discord voice bot: log in, join a voice channel, send an audio device's sound"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# serenity's and songbird's event handler traits use it.
+async-trait = "0.1"
+rtspcam-audio.workspace = true
+rtspcam-core.workspace = true
+# No command framework or slash commands: the gateway, the cache (servers and channels), the
+# REST calls the bot needs, and the hook songbird uses.
+serenity = { version = "0.12.5", default-features = false, features = [
+    "client",
+    "gateway",
+    "cache",
+    "model",
+    "rustls_backend",
+    "voice",
+] }
+# Voice with DAVE (Discord's end-to-end encryption, required since 2026-03-01). Pinned: the
+# voice library is what breaks when Discord changes the protocol (documentation/19 §1).
+songbird = { version = "=0.6.1", default-features = false, features = [
+    "driver",
+    "gateway",
+    "rustls",
+    "serenity",
+    "tungstenite",
+] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

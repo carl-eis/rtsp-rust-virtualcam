@@ -1,0 +1,17 @@
+[package]
+name = "rtspcam-audio"
+description = "Audio devices, capture and playback at 48 kHz stereo, resampling, noise gate and level meter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "0.18"
+# The same version songbird uses, so it is built once.
+rubato = "0.16"
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crate::constants::{APP_DIR_NAME, CONFIG_FILE_NAME};
+use crate::constants::{APP_DIR_NAME, CONFIG_FILE_NAME, DISCORD_FILE_NAME};
 use crate::error::ConfigError;
 
 fn base_dirs() -> Result<directories::BaseDirs, ConfigError> {
@@ -22,6 +22,11 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
 /// `config.json` in [`config_dir`].
 pub fn config_file() -> Result<PathBuf, ConfigError> {
     Ok(config_dir()?.join(CONFIG_FILE_NAME))
+}
+
+/// `discord.json` in [`config_dir`], next to `config.json`.
+pub fn discord_file() -> Result<PathBuf, ConfigError> {
+    Ok(config_dir()?.join(DISCORD_FILE_NAME))
 }
 
 /// The app's rolling log files (local, not roaming, on Windows).

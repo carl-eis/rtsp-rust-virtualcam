@@ -1,14 +1,15 @@
 // RTSP Cam's window and tray icon. The Rust side (src/ui/) fills in the properties and handles
 // the callbacks; this file only lays things out.
 
-import { Button, Palette, StandardTableView } from "std-widgets.slint";
+import { Button, Palette, StandardTableView, TabWidget } from "std-widgets.slint";
 import { Label } from "common.slint";
 import {
     DiscoverDialog, DiscoverSheet, MessageDialog, MessageSheet, PictureDialog, PictureSheet,
     SettingsDialog, SettingsSheet, StreamDialog, StreamSheet,
 } from "dialogs.slint";
+import { DiscordPage, DiscordTab } from "discord.slint";
 
-export { DiscoverDialog, MessageDialog, PictureDialog, SettingsDialog, StreamDialog }
+export { DiscordTab, DiscoverDialog, MessageDialog, PictureDialog, SettingsDialog, StreamDialog }
 
 // The `theme` setting.
 export enum Theme { system, light, dark }
@@ -31,6 +32,8 @@ export component MainWindow inherits Window {
     in property <string> preview-message;
     out property <length> preview-width: preview-box.width;
     out property <length> preview-height: preview-box.height;
+    // 0: Cameras, 1: Discord.
+    in-out property <int> tab;
     in property <string> status-cameras;
     in property <string> status-errors;
     // A dialog is open: the window behind it doesn't take input.
@@ -131,6 +134,10 @@ export component MainWindow inherits Window {
     }
 
     VerticalLayout {
+        TabWidget {
+            current-index <=> root.tab;
+            Tab {
+                title: "Cameras";
         VerticalLayout {
             padding: 10px;
             spacing: 10px;
@@ -256,6 +263,13 @@ export component MainWindow inherits Window {
                 }
             }
         }
+            }
+
+            Tab {
+                title: "Discord";
+                DiscordPage { }
+            }
+        }
 
         Rectangle {
             height: 26px;
@@ -297,8 +311,12 @@ export component MainWindow inherits Window {
 export component AppTray inherits SystemTrayIcon {
     in property <string> tip;
     in property <bool> paused;
+    // The Discord bot is in a voice channel: the menu offers Mute/Unmute.
+    in property <bool> discord-in-voice;
+    in property <bool> discord-muted;
     callback open();
     callback toggle-pause();
+    callback toggle-discord-mute();
     callback quit();
 
     icon: @image-url("../assets/icon.png");
@@ -320,6 +338,13 @@ export component AppTray inherits SystemTrayIcon {
             title: root.paused ? "Resume all" : "Pause all";
             activated => {
                 root.toggle-pause();
+            }
+        }
+
+        if root.discord-in-voice: MenuItem {
+            title: root.discord-muted ? "Discord: Unmute" : "Discord: Mute";
+            activated => {
+                root.toggle-discord-mute();
             }
         }
 

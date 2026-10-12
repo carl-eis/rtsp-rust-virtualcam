@@ -10,6 +10,17 @@ pub fn open_folder(folder: &Path) -> io::Result<()> {
     os::open_folder(folder)
 }
 
+/// Opens a web address in the default browser.
+pub fn open_url(url: &str) -> io::Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a web address",
+        ));
+    }
+    os::open_url(url)
+}
+
 /// Lets a GUI program print to the terminal it was started from. Windows only: a windowed
 /// Windows program has no console of its own. Does nothing elsewhere.
 pub fn attach_parent_console() {

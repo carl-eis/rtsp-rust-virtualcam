@@ -17,7 +17,8 @@ mod pipe;
 use std::sync::Arc;
 
 pub(crate) use desktop::{
-    attach_parent_console, open_folder, process_cpu_time, process_memory, termination_requested,
+    attach_parent_console, open_folder, open_url, process_cpu_time, process_memory,
+    termination_requested,
 };
 
 use crate::{

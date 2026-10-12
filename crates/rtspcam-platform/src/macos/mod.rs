@@ -70,6 +70,13 @@ pub(crate) fn open_folder(folder: &Path) -> io::Result<()> {
         .map(drop)
 }
 
+pub(crate) fn open_url(url: &str) -> io::Result<()> {
+    std::process::Command::new("open")
+        .arg(url)
+        .spawn()
+        .map(drop)
+}
+
 pub(crate) fn attach_parent_console() {}
 
 pub(crate) fn process_memory() -> Option<(usize, usize)> {

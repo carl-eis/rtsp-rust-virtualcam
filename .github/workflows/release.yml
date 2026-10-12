@@ -82,9 +82,9 @@ jobs:
           v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
           [ "v$v" = "${{ github.ref_name }}" ] || { echo "tag ${{ github.ref_name }} does not match Cargo.toml version $v"; exit 1; }
 
-      # Slint's font lookup (fontique) links fontconfig.
+      # Slint's font lookup (fontique) links fontconfig; cpal (Discord tab audio) links ALSA.
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfontconfig1-dev libasound2-dev
 
       - name: Install packaging tools
         run: cargo install --locked cargo-deb cargo-generate-rpm

@@ -1,6 +1,7 @@
 # 19 — Plan: Discord Tab
 
-Status: plan (2026-10-12), nothing built. Branch `feat/audio-tab`. Refer to this work as
+Status: D0–D4 built (2026-10-12), not yet tried against Discord: see
+[20](20-progress-discord-tab.md). D5–D8 not started. Branch `feat/audio-tab`. Refer to this work as
 **"Discord Tab"**; phases are numbered D0–D8 so they don't clash with phases 0–8 in
 [01](01-plan.md) or G/L/M in [11](11-virtual-cameras-linux-macos-plan.md).
 

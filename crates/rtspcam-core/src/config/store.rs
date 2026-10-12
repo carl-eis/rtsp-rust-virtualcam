@@ -1,12 +1,30 @@
 use std::fmt;
 use std::fs;
 use std::io::{self, Write as _};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use super::Config;
-use super::migrate::{CURRENT_VERSION, migrate};
+use super::migrate::{CURRENT_VERSION, MIGRATIONS, Migration, migrate};
 use crate::error::ConfigError;
+
+/// A settings file that a [`JsonStore`] reads and writes: `config.json` ([`Config`]) or
+/// `discord.json` ([`DiscordSettings`](crate::discord::DiscordSettings)).
+pub trait Document: Serialize + DeserializeOwned + Default + Send + 'static {
+    /// Schema version written by this build.
+    const CURRENT_VERSION: u64;
+    /// `MIGRATIONS[i]` upgrades a document from version `i + 1` to `i + 2`.
+    const MIGRATIONS: &'static [Migration];
+}
+
+impl Document for Config {
+    const CURRENT_VERSION: u64 = CURRENT_VERSION;
+    const MIGRATIONS: &'static [Migration] = MIGRATIONS;
+}
 
 /// Puts a newly written file in place of an existing one, keeping the old one as a backup.
 ///
@@ -31,17 +49,40 @@ impl FileReplace for CopyThenRename {
 }
 
 /// Reads and writes `config.json`.
+pub type ConfigStore = JsonStore<Config>;
+
+/// Reads and writes one JSON settings file, such as `config.json` ([`ConfigStore`]).
 ///
 /// Saves are atomic: the new content goes to `config.json.tmp` and then replaces
 /// `config.json`, and the previous file is kept as `config.json.bak`.
 ///
 /// Cloning is cheap; clones share the record of the last content read or written, which lets
-/// the [watcher](ConfigStore::watch) ignore the app's own saves.
-#[derive(Debug, Clone)]
-pub struct ConfigStore {
+/// the [watcher](JsonStore::watch) ignore the app's own saves.
+pub struct JsonStore<T> {
     path: PathBuf,
     pub(super) last_seen: Arc<Mutex<Option<Vec<u8>>>>,
     replacer: Arc<dyn FileReplace>,
+    _document: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for JsonStore<T> {
+    fn clone(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            last_seen: self.last_seen.clone(),
+            replacer: self.replacer.clone(),
+            _document: PhantomData,
+        }
+    }
+}
+
+impl<T> fmt::Debug for JsonStore<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsonStore")
+            .field("path", &self.path)
+            .field("replacer", &self.replacer)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ConfigStore {
@@ -49,12 +90,15 @@ impl ConfigStore {
     pub fn open_default() -> Result<Self, ConfigError> {
         Ok(Self::new(crate::paths::config_file()?))
     }
+}
 
+impl<T: Document> JsonStore<T> {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
             last_seen: Arc::default(),
             replacer: Arc::new(CopyThenRename),
+            _document: PhantomData,
         }
     }
 
@@ -77,25 +121,26 @@ impl ConfigStore {
         with_suffix(&self.path, ".tmp")
     }
 
-    /// Loads the config. A missing file gives the default config.
+    /// Loads the file. A missing file gives the defaults.
     ///
     /// Files written by an older schema version are migrated and saved back in the new format
     /// (the original stays in `config.json.bak`).
-    pub fn load(&self) -> Result<Config, ConfigError> {
+    pub fn load(&self) -> Result<T, ConfigError> {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 tracing::info!(path = %self.path.display(), "no config file yet, using defaults");
-                return Ok(Config::default());
+                return Ok(T::default());
             }
             Err(e) => return Err(ConfigError::io(&self.path, e)),
         };
         self.remember(&bytes);
-        let (config, from_version) = parse(&self.path, &bytes)?;
-        if from_version < CURRENT_VERSION {
+        let (config, from_version) = parse::<T>(&self.path, &bytes)?;
+        if from_version < T::CURRENT_VERSION {
             tracing::info!(
+                path = %self.path.display(),
                 from_version,
-                to_version = CURRENT_VERSION,
+                to_version = T::CURRENT_VERSION,
                 "migrated config"
             );
             self.save(&config)?;
@@ -103,8 +148,8 @@ impl ConfigStore {
         Ok(config)
     }
 
-    /// Writes the config atomically, keeping the previous file as `config.json.bak`.
-    pub fn save(&self, config: &Config) -> Result<(), ConfigError> {
+    /// Writes the file atomically, keeping the previous one as `config.json.bak`.
+    pub fn save(&self, config: &T) -> Result<(), ConfigError> {
         let mut bytes = serde_json::to_vec_pretty(config).map_err(ConfigError::Serialize)?;
         bytes.push(b'\n');
 
@@ -153,14 +198,14 @@ impl ConfigStore {
     }
 }
 
-/// Parses and migrates config bytes; returns the config and the version found in the file.
-pub(super) fn parse(path: &Path, bytes: &[u8]) -> Result<(Config, u64), ConfigError> {
+/// Parses and migrates the file's bytes; returns the document and the version found in it.
+pub(super) fn parse<T: Document>(path: &Path, bytes: &[u8]) -> Result<(T, u64), ConfigError> {
     let parse_err = |source| ConfigError::Parse {
         path: path.to_owned(),
         source,
     };
     let mut doc: serde_json::Value = serde_json::from_slice(bytes).map_err(parse_err)?;
-    let from_version = migrate(&mut doc)?;
+    let from_version = migrate(&mut doc, T::CURRENT_VERSION, T::MIGRATIONS)?;
     let config = serde_json::from_value(doc).map_err(parse_err)?;
     Ok((config, from_version))
 }

@@ -50,6 +50,7 @@ Section numbers (§) refer to the headings inside each document.
 | 17 | [17-realtimewebcam-comparison.md](17-realtimewebcam-comparison.md) | Review | RTSP Cam vs RealTimeWebCam (Windows virtual camera, latency) | **Current** latency cap with catch-up to live, opt-in persistent camera, lost request token in the DLL, delivery on frame arrival, suggested next steps |
 | 18 | [18-progress-issue-13.md](18-progress-issue-13.md) | Progress | Issue #13 (15 §5 "60 fps") | **Current** 60 fps output (36 media types), the "Source" resolution (`output.source`, `source-sizes.json`, re-create when no app uses the camera, pipe kept on Windows), 1080p60 CPU and frame-gap measurements |
 | 19 | [19-discord-tab-plan.md](19-discord-tab-plan.md) | Plan | **"Discord Tab"**: a Discord voice bot in a new tab (features from Discord Audio Stream Bot, DAVE approach from TheEpicAudioStreamer), phases D0–D8 | **Next work** on `feat/audio-tab`: songbird (DAVE) + serenity, `rtspcam-audio` and `rtspcam-discord` crates, the tab, receive, auto-join/follow, camera audio as a source |
+| 20 | [20-progress-discord-tab.md](20-progress-discord-tab.md) | Progress | Discord Tab phases D0–D4 of 19 | **Current** D0 results (versions, loopback, build cost, CRT fix), `rtspcam-audio`, `rtspcam-discord` (session state machine, backend), `discord.json` (`JsonStore`), the tab; not yet tried against Discord |
 
 ### Which documents are current
 
@@ -70,7 +71,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | "CPU per stage was never measured", "decoding is software today" (08.1 §1, 03 §4.2) | Measured and built: [14 §3](14-progress-phase-8.md#3-measurements) |
 | Low-hanging fixes 15 §4.1–4.3 and 4.5 (proposed) | Built: [16](16-progress-issue-12.md); 15 §4.4 still open |
 | Advertised formats "1080p/720p/480p at 30 and 15 fps", 24 media types (03, 15, 16) | 60 fps added and a "Source" size: 36 (or 48) types, [18 §1](18-progress-issue-13.md#1-what-was-done) |
-| Next free document number (04, 05, 06, 07, 13) | 20. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
+| Next free document number (04, 05, 06, 07, 13) | 21. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
 ## 3. Reading order by task
 

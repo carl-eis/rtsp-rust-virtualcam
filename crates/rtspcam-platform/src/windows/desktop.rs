@@ -15,6 +15,15 @@ pub(crate) fn open_folder(folder: &Path) -> io::Result<()> {
         .map(drop)
 }
 
+/// Explorer hands a web address to the default browser (no `cmd /c start`, which would
+/// interpret `&` in the address).
+pub(crate) fn open_url(url: &str) -> io::Result<()> {
+    std::process::Command::new("explorer.exe")
+        .arg(url)
+        .spawn()
+        .map(drop)
+}
+
 /// Started from a terminal, a windowed build can still print there and be stopped with Ctrl+C.
 pub(crate) fn attach_parent_console() {
     // SAFETY: fails harmlessly when there is no parent console.
