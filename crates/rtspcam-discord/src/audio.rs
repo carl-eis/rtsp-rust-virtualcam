@@ -1,10 +1,15 @@
-//! The send path: capture → gate → queue → the voice connection.
+//! The send path: capture → gate → queue → the voice connection. And the receive path: the
+//! voice connection's decoded speakers → mix → queue → playback.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use rtspcam_audio::{AudioError, BLOCK_LEN, Block, BlockQueue, Capture, Gate, GateSettings, Level};
+use rtspcam_audio::{
+    AudioError, BLOCK_LEN, Block, BlockQueue, CHANNELS, Capture, Gate, GateSettings, Level, Mix,
+    Playback, SAMPLE_RATE,
+};
+use songbird::input::{Input, RawAdapter};
 
 use crate::status::Meter;
 
@@ -98,24 +103,90 @@ impl AudioShared {
     }
 }
 
-/// Opens sound sources. The real one uses `rtspcam-audio`; tests use a fake.
-pub(crate) trait Inputs: Send + Sync + 'static {
+/// Hearing the channel: settings and readings shared between the bot and the voice
+/// connection's receive events, through atomics.
+#[derive(Debug)]
+pub(crate) struct ListenShared {
+    /// The mixed channel, for the playback.
+    pub(crate) queue: Arc<BlockQueue>,
+    enabled: AtomicBool,
+    volume: AtomicU32,
+    speakers: AtomicU32,
+}
+
+impl ListenShared {
+    pub(crate) fn new(enabled: bool, volume: f32) -> Self {
+        Self {
+            queue: Arc::new(BlockQueue::default()),
+            enabled: AtomicBool::new(enabled),
+            volume: AtomicU32::new(volume.to_bits()),
+            speakers: AtomicU32::new(0),
+        }
+    }
+
+    pub(crate) fn set(&self, enabled: bool, volume: f32) {
+        let was = self.enabled.swap(enabled, Ordering::Relaxed);
+        self.volume.store(volume.to_bits(), Ordering::Relaxed);
+        if was && !enabled {
+            self.queue.clear();
+            self.speakers.store(0, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// People heard in the last 20 ms.
+    pub(crate) fn speakers(&self) -> u32 {
+        self.speakers.load(Ordering::Relaxed)
+    }
+
+    /// One 20 ms tick of the channel: each speaker's decoded sound (48 kHz stereo `i16`).
+    /// Mixed and queued for the playback while listening; nothing is queued when nobody
+    /// speaks (the playback plays silence).
+    pub(crate) fn tick<'a>(&self, voices: impl IntoIterator<Item = &'a [i16]>) {
+        if !self.enabled() {
+            return;
+        }
+        let volume = f32::from_bits(self.volume.load(Ordering::Relaxed));
+        let mut mix = Mix::new();
+        for voice in voices {
+            mix.add_i16(voice, volume);
+        }
+        self.speakers.store(mix.voices() as u32, Ordering::Relaxed);
+        if let Some(block) = mix.finish() {
+            self.queue.push(block);
+        }
+    }
+}
+
+/// Opens sound devices. The real one uses `rtspcam-audio`; tests use a fake.
+pub(crate) trait Devices: Send + Sync + 'static {
     /// Starts recording from device `id` into `sink`; returns what keeps it running (dropping
     /// it stops the recording) and the device's name. Slow: called on a blocking thread.
-    fn open(
+    fn open_input(
         &self,
         id: &str,
         sink: Box<dyn FnMut(Block) + Send>,
+        on_error: Box<dyn FnMut(AudioError) + Send>,
+    ) -> Result<(Box<dyn Send>, String), AudioError>;
+
+    /// Starts playing `queue` on output device `id`; like [`open_input`](Self::open_input).
+    fn open_output(
+        &self,
+        id: &str,
+        queue: Arc<BlockQueue>,
         on_error: Box<dyn FnMut(AudioError) + Send>,
     ) -> Result<(Box<dyn Send>, String), AudioError>;
 }
 
 /// Audio devices through `cpal`.
 #[derive(Debug, Default)]
-pub(crate) struct DeviceInputs;
+pub(crate) struct AudioDevices;
 
-impl Inputs for DeviceInputs {
-    fn open(
+impl Devices for AudioDevices {
+    fn open_input(
         &self,
         id: &str,
         sink: Box<dyn FnMut(Block) + Send>,
@@ -125,6 +196,22 @@ impl Inputs for DeviceInputs {
         let name = capture.info().device_name.clone();
         Ok((Box::new(capture), name))
     }
+
+    fn open_output(
+        &self,
+        id: &str,
+        queue: Arc<BlockQueue>,
+        on_error: Box<dyn FnMut(AudioError) + Send>,
+    ) -> Result<(Box<dyn Send>, String), AudioError> {
+        let playback = Playback::open(id, queue, on_error)?;
+        let name = playback.device_name().to_owned();
+        Ok((Box::new(playback), name))
+    }
+}
+
+/// The voice connection's input: the queue, as songbird's raw 32-bit float format.
+pub(crate) fn sound_input(queue: Arc<BlockQueue>) -> Input {
+    RawAdapter::new(QueueReader::new(queue), SAMPLE_RATE, CHANNELS as u32).into()
 }
 
 /// Reads the queue as a byte stream of interleaved little-endian `f32` (48 kHz stereo), the
@@ -239,6 +326,21 @@ mod tests {
         assert!(first <= BLOCK_LEN / 8, "{first}");
     }
 
+    /// Songbird can open and decode the input. It can't without symphonia's `pcm` codec, and
+    /// then the bot joins channels but sends nothing (seen in the D5 tests against Discord).
+    #[tokio::test]
+    async fn songbird_can_play_the_queue() {
+        use songbird::input::codecs::{get_codec_registry, get_probe};
+
+        let queue = Arc::new(BlockQueue::default());
+        queue.push(block_of(0.5));
+        let input = sound_input(queue)
+            .make_playable_async(get_codec_registry(), get_probe())
+            .await
+            .expect("songbird can parse the raw input");
+        assert!(input.is_playable());
+    }
+
     #[test]
     fn odd_sized_reads_keep_samples_aligned() {
         let queue = Arc::new(BlockQueue::default());
@@ -286,6 +388,34 @@ mod tests {
         assert!(!shared.meter().gate_open);
         let last = std::iter::from_fn(|| shared.queue.pop()).last().unwrap();
         assert!(last.is_silent());
+    }
+
+    #[test]
+    fn the_channel_is_mixed_only_while_listening() {
+        let listen = ListenShared::new(false, 1.0);
+        let voice = [8192_i16; BLOCK_LEN];
+        listen.tick([&voice[..], &voice[..]]);
+        assert!(listen.queue.is_empty());
+        assert_eq!(listen.speakers(), 0);
+
+        listen.set(true, 0.5);
+        listen.tick([&voice[..], &voice[..]]);
+        assert_eq!(listen.speakers(), 2);
+        let block = listen.queue.pop().unwrap();
+        // (0.25 + 0.25) * 0.5
+        assert!((block[0] - 0.25).abs() < 1e-6);
+
+        // Nobody speaking: nothing queued.
+        listen.tick([]);
+        assert!(listen.queue.is_empty());
+        assert_eq!(listen.speakers(), 0);
+
+        listen.tick([&voice[..]]);
+        listen.set(false, 0.5);
+        assert!(
+            listen.queue.is_empty(),
+            "turning it off drops what is queued"
+        );
     }
 
     #[test]

@@ -14,8 +14,8 @@ use rtspcam_core::Secret;
 use rtspcam_core::config::ConfigWatcher;
 use rtspcam_core::discord::{ChannelRef, DEFAULT_INPUT, DiscordSettings, DiscordStore};
 use rtspcam_discord::{
-    BotStatus, DeviceInfo, DeviceKind, DiscordBot, InputStatus, Online, SILENCE_DB, Server,
-    VoiceState, list_sources,
+    BotStatus, DeviceInfo, DeviceKind, DeviceStatus, DiscordBot, Online, SILENCE_DB, Server, Stage,
+    VoiceState, list_devices,
 };
 use slint::{ComponentHandle as _, ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tokio::sync::watch;
@@ -44,6 +44,13 @@ pub(crate) struct DiscordUi {
     picked: Cell<Option<(u64, Option<u64>)>>,
     /// The source picker's entries, in order.
     devices: RefCell<Vec<DeviceInfo>>,
+    /// The output picker's entries (hearing the channel), in order.
+    outputs: RefCell<Vec<DeviceInfo>>,
+    /// The picked server's "After logging in" and "Follow" pickers: the channel or user id of
+    /// each entry (`None` for "don't" / "nobody"), and the labels shown.
+    auto_join_ids: RefCell<Vec<Option<u64>>>,
+    follow_ids: RefCell<Vec<Option<u64>>>,
+    rule_labels: RefCell<(Vec<String>, Vec<String>)>,
     poll: Timer,
     save_later: Timer,
     /// `discord.json` read again after a hand edit.
@@ -87,6 +94,10 @@ impl DiscordUi {
             servers: RefCell::default(),
             picked: Cell::new(picked),
             devices: RefCell::default(),
+            outputs: RefCell::default(),
+            auto_join_ids: RefCell::default(),
+            follow_ids: RefCell::default(),
+            rule_labels: RefCell::default(),
             poll: Timer::default(),
             save_later: Timer::default(),
             external,
@@ -159,52 +170,83 @@ fn show_settings(d: &DiscordUi, tab: &DiscordTab<'_>) {
     tab.set_muted(s.muted);
     tab.set_gate_enabled(s.gate.enabled);
     tab.set_threshold(s.threshold_db());
+    tab.set_listen(s.listen.enabled);
+    tab.set_volume(s.listen.volume_percent as f32);
 }
 
-/// The source picker: the system default, the saved device until the list is known, then
-/// whatever was listed.
+/// The source and output pickers: the system default, the saved device until the list is
+/// known, then whatever was listed.
 fn show_devices(d: &DiscordUi, tab: &DiscordTab<'_>) {
-    let saved = d.settings.borrow().input_device.clone();
-    let mut devices = d.devices.borrow_mut();
+    let s = d.settings.borrow();
+    let (devices, index) = picker(&d.devices, &s.input_device, DeviceKind::Input);
+    tab.set_devices(devices);
+    tab.set_device(index);
+    let (outputs, index) = picker(&d.outputs, &s.listen.output_device, DeviceKind::Output);
+    tab.set_outputs(outputs);
+    tab.set_output(index);
+}
+
+fn picker(
+    list: &RefCell<Vec<DeviceInfo>>,
+    saved: &str,
+    kind: DeviceKind,
+) -> (ModelRc<SharedString>, i32) {
+    let mut devices = list.borrow_mut();
     if devices.is_empty() {
-        devices.push(default_entry());
+        devices.push(default_entry(kind));
     }
     if !devices.iter().any(|dev| dev.id == saved) {
         devices.push(DeviceInfo {
-            id: saved.clone(),
-            name: "The saved source (Refresh to list the devices)".into(),
-            kind: DeviceKind::Input,
+            id: saved.to_owned(),
+            name: "The saved device (Refresh to list the devices)".into(),
+            kind,
             is_default: false,
         });
     }
-    tab.set_devices(strings(devices.iter().map(device_label)));
-    tab.set_device(devices.iter().position(|dev| dev.id == saved).unwrap_or(0) as i32);
+    let index = devices.iter().position(|dev| dev.id == saved).unwrap_or(0);
+    let labels = devices
+        .iter()
+        .map(|dev| device_label(dev, kind))
+        .collect::<Vec<_>>();
+    (strings(labels), index as i32)
 }
 
-fn default_entry() -> DeviceInfo {
+fn default_entry(kind: DeviceKind) -> DeviceInfo {
+    let name = match kind {
+        DeviceKind::Input => "System default input",
+        DeviceKind::Output => "System default output",
+    };
     DeviceInfo {
         id: DEFAULT_INPUT.into(),
-        name: "System default input".into(),
-        kind: DeviceKind::Input,
+        name: name.into(),
+        kind,
         is_default: false,
     }
 }
 
-fn device_label(device: &DeviceInfo) -> String {
+/// A device's name in the `picker` for `kind`; an output in the source picker records what
+/// the PC plays.
+fn device_label(device: &DeviceInfo, picker: DeviceKind) -> String {
     let default = if device.is_default { " (default)" } else { "" };
-    match device.kind {
-        DeviceKind::Input => format!("{}{default}", device.name),
-        DeviceKind::Output => format!("{}{default} - what the PC plays", device.name),
+    match (picker, device.kind) {
+        (DeviceKind::Input, DeviceKind::Output) => {
+            format!("{}{default} - what the PC plays", device.name)
+        }
+        _ => format!("{}{default}", device.name),
     }
 }
 
 fn refresh_devices(app: &Rc<App>) {
-    list_sources(|result| {
+    list_devices(|result| {
         let _ = slint::invoke_from_event_loop(move || {
             with_app(|app| match result {
-                Ok(list) => with_tab(app, |d, tab| {
-                    *d.devices.borrow_mut() =
-                        std::iter::once(default_entry()).chain(list).collect();
+                Ok(lists) => with_tab(app, |d, tab| {
+                    *d.devices.borrow_mut() = std::iter::once(default_entry(DeviceKind::Input))
+                        .chain(lists.sources)
+                        .collect();
+                    *d.outputs.borrow_mut() = std::iter::once(default_entry(DeviceKind::Output))
+                        .chain(lists.outputs)
+                        .collect();
                     show_devices(d, tab);
                 }),
                 Err(e) => message::inform(
@@ -303,12 +345,27 @@ fn show_status(d: &DiscordUi, tab: &DiscordTab<'_>, status: &BotStatus) {
     );
     tab.set_notice_hint(notice.map(|n| n.hint.clone()).unwrap_or_default().into());
     let (input_text, input_failed) = match online.map(|o| &o.input) {
-        Some(InputStatus::Open { device }) => (format!("Recording from {device}."), false),
-        Some(InputStatus::Failed { reason }) => (capitalize(reason), true),
+        Some(DeviceStatus::Open { device }) => (format!("Recording from {device}."), false),
+        Some(DeviceStatus::Failed { reason }) => (capitalize(reason), true),
         _ => (String::new(), false),
     };
     tab.set_input_text(input_text.into());
     tab.set_input_failed(input_failed);
+    let (output_text, output_failed) = match online.map(|o| &o.output) {
+        Some(DeviceStatus::Open { device }) => {
+            let speakers = status.voice().map_or(0, |v| v.speakers);
+            let heard = match speakers {
+                0 => String::new(),
+                1 => " 1 person talking.".into(),
+                n => format!(" {n} people talking."),
+            };
+            (format!("Playing the channel on {device}.{heard}"), false)
+        }
+        Some(DeviceStatus::Failed { reason }) => (capitalize(reason), true),
+        _ => (String::new(), false),
+    };
+    tab.set_output_text(output_text.into());
+    tab.set_output_failed(output_failed);
 }
 
 fn capitalize(text: &str) -> String {
@@ -338,6 +395,18 @@ fn voice_text(online: &Online) -> String {
         ),
         VoiceState::Connected => {
             let mut text = format!("In {where_}.");
+            match voice.stage {
+                Some(Stage::Speaker) => text += " On the stage as a speaker.",
+                Some(Stage::Requested) => {
+                    text += " It asked to speak: a stage moderator has to accept before the \
+                             audience hears it.";
+                }
+                Some(Stage::Audience) => {
+                    text += " In the audience: nobody hears it until a stage moderator \
+                             invites it to speak.";
+                }
+                None => {}
+            }
             if voice.lag_ms >= 100 {
                 text += &format!(" {} ms behind.", voice.lag_ms);
             }
@@ -349,8 +418,9 @@ fn voice_text(online: &Online) -> String {
     }
 }
 
-/// The server and channel pickers. Rebuilt only when the servers change, so a choice being
-/// made isn't reset; the bot's current channel is picked when it joins or is moved.
+/// The server and channel pickers. Rebuilt only when the servers or their channels change, so
+/// a choice being made isn't reset (people moving between channels only update the "Follow"
+/// picker); the bot's current channel is picked when it joins or is moved.
 fn show_servers(d: &DiscordUi, tab: &DiscordTab<'_>, online: Option<&Online>) {
     let servers = online.map(|o| o.servers.clone()).unwrap_or_default();
     if let Some(voice) = online.and_then(|o| o.voice.as_ref()) {
@@ -360,7 +430,16 @@ fn show_servers(d: &DiscordUi, tab: &DiscordTab<'_>, online: Option<&Online>) {
             *d.servers.borrow_mut() = Vec::new();
         }
     }
-    if *d.servers.borrow() == servers {
+    let shape = |list: &[Server]| {
+        list.iter()
+            .map(|s| (s.id, s.name.clone(), s.channels.clone()))
+            .collect::<Vec<_>>()
+    };
+    if shape(&d.servers.borrow()) == shape(&servers) {
+        if *d.servers.borrow() != servers {
+            *d.servers.borrow_mut() = servers;
+            show_rules(d, tab);
+        }
         return;
     }
     tab.set_servers(strings(servers.iter().map(|s| s.name.clone())));
@@ -406,6 +485,92 @@ fn show_channels(d: &DiscordUi, tab: &DiscordTab<'_>) {
         -1
     } else {
         index as i32
+    });
+    drop(servers);
+    show_rules(d, tab);
+}
+
+/// The picked server, from the server picker.
+fn picked_server(d: &DiscordUi, tab: &DiscordTab<'_>) -> Option<Server> {
+    let index = usize::try_from(tab.get_server()).ok()?;
+    d.servers.borrow().get(index).cloned()
+}
+
+/// The picked server's "After logging in" and "Follow" pickers, from its saved rules. Only
+/// replaced when their entries change, so a list being looked at isn't reset.
+fn show_rules(d: &DiscordUi, tab: &DiscordTab<'_>) {
+    let server = picked_server(d, tab);
+    let rules = server
+        .as_ref()
+        .and_then(|s| d.settings.borrow().server(s.id).cloned())
+        .unwrap_or_default();
+    let channels = server
+        .as_ref()
+        .map(|s| s.channels.as_slice())
+        .unwrap_or_default();
+    let members = server
+        .as_ref()
+        .map(|s| s.members.as_slice())
+        .unwrap_or_default();
+
+    let mut join_ids = vec![None];
+    let mut join_labels = vec!["Don't join a channel".to_owned()];
+    for c in channels {
+        join_ids.push(Some(c.id));
+        join_labels.push(format!("Join {}", c.name));
+    }
+    if let Some(id) = rules.auto_join()
+        && !join_ids.contains(&Some(id))
+    {
+        join_ids.push(Some(id));
+        join_labels.push(format!("Join channel {id} (not found)"));
+    }
+
+    let mut follow_ids = vec![None];
+    let mut follow_labels = vec!["Nobody".to_owned()];
+    for m in members {
+        let channel = server
+            .as_ref()
+            .and_then(|s| s.channel(m.channel_id))
+            .map_or("a channel the bot can't see", |c| c.name.as_str());
+        follow_ids.push(Some(m.id));
+        follow_labels.push(format!("{} (in {channel})", m.name));
+    }
+    if let Some(id) = rules.follow()
+        && !follow_ids.contains(&Some(id))
+    {
+        follow_ids.push(Some(id));
+        follow_labels.push(format!("User {id} (not in a voice channel now)"));
+    }
+
+    let join_index = join_ids.iter().position(|c| *c == rules.auto_join());
+    let follow_index = follow_ids.iter().position(|u| *u == rules.follow());
+    let mut shown = d.rule_labels.borrow_mut();
+    if shown.0 != join_labels {
+        tab.set_auto_joins(strings(join_labels.clone()));
+        shown.0 = join_labels;
+    }
+    if shown.1 != follow_labels {
+        tab.set_follows(strings(follow_labels.clone()));
+        shown.1 = follow_labels;
+    }
+    tab.set_auto_join(join_index.unwrap_or(0) as i32);
+    tab.set_follow(follow_index.unwrap_or(0) as i32);
+    *d.auto_join_ids.borrow_mut() = join_ids;
+    *d.follow_ids.borrow_mut() = follow_ids;
+}
+
+/// Saves a change to the picked server's rules and hands them to the bot.
+fn edit_rules(app: &Rc<App>, f: impl FnOnce(&DiscordUi, u64, &mut DiscordSettings)) {
+    with_tab(app, |d, tab| {
+        let Some(server) = picked_server(d, tab) else {
+            return;
+        };
+        f(d, server.id, &mut d.settings.borrow_mut());
+        d.bot
+            .set_server_rules(discord::server_rules(&d.settings.borrow()));
+        d.save(app);
+        show_rules(d, tab);
     });
 }
 
@@ -513,16 +678,123 @@ fn gate_changed(app: &Rc<App>) {
             s.gate.threshold_db = tab.get_threshold().round();
         }
         d.bot.set_gate(discord::gate(&d.settings.borrow()));
-        let me = Rc::downgrade(app);
-        d.save_later
-            .start(TimerMode::SingleShot, SAVE_DELAY, move || {
-                if let Some(app) = me.upgrade()
-                    && let Some(d) = app.discord.as_ref()
-                {
-                    d.save(&app);
-                }
-            });
+        save_soon(app, d);
     });
+}
+
+/// Saves once a slider has stopped moving for a moment.
+fn save_soon(app: &Rc<App>, d: &DiscordUi) {
+    let me = Rc::downgrade(app);
+    d.save_later
+        .start(TimerMode::SingleShot, SAVE_DELAY, move || {
+            if let Some(app) = me.upgrade()
+                && let Some(d) = app.discord.as_ref()
+            {
+                d.save(&app);
+            }
+        });
+}
+
+/// "Play the channel" or the volume changed.
+fn listen_changed(app: &Rc<App>) {
+    with_tab(app, |d, tab| {
+        {
+            let mut s = d.settings.borrow_mut();
+            s.listen.enabled = tab.get_listen();
+            s.listen.volume_percent = tab.get_volume().round().clamp(0.0, 200.0) as u32;
+        }
+        d.bot.set_listen(discord::listen(&d.settings.borrow()));
+        save_soon(app, d);
+    });
+}
+
+fn choose_output(app: &Rc<App>, index: i32) {
+    with_tab(app, |d, _| {
+        let Some(id) = usize::try_from(index)
+            .ok()
+            .and_then(|i| d.outputs.borrow().get(i).map(|dev| dev.id.clone()))
+        else {
+            return;
+        };
+        if d.settings.borrow().listen.output_device == id {
+            return;
+        }
+        d.settings.borrow_mut().listen.output_device = id;
+        d.bot.set_listen(discord::listen(&d.settings.borrow()));
+        d.save(app);
+    });
+}
+
+fn choose_auto_join(app: &Rc<App>, index: i32) {
+    edit_rules(app, |d, guild, settings| {
+        let Some(channel) = usize::try_from(index)
+            .ok()
+            .and_then(|i| d.auto_join_ids.borrow().get(i).copied())
+        else {
+            return;
+        };
+        settings.edit_server(guild, |r| {
+            r.auto_join_channel = channel.map(|c| c.to_string());
+        });
+    });
+}
+
+fn choose_follow(app: &Rc<App>, index: i32) {
+    edit_rules(app, |d, guild, settings| {
+        let Some(user) = usize::try_from(index)
+            .ok()
+            .and_then(|i| d.follow_ids.borrow().get(i).copied())
+        else {
+            return;
+        };
+        settings.edit_server(guild, |r| r.follow_user = user.map(|u| u.to_string()));
+    });
+}
+
+/// Takes the bot out of the picked server, after asking.
+fn leave_server(app: &Rc<App>) {
+    let Some((server, bot)) = app.discord.as_ref().and_then(|d| {
+        let ui = app.ui()?;
+        let tab = ui.global::<DiscordTab>();
+        let user = d
+            .status
+            .borrow()
+            .borrow()
+            .online()
+            .map(|o| o.user.clone())
+            .unwrap_or_default();
+        Some((picked_server(d, &tab)?, user))
+    }) else {
+        return;
+    };
+    let me = Rc::downgrade(app);
+    message::ask(
+        app,
+        "Leave this server",
+        &format!(
+            "Take {bot} out of \"{}\"? It needs a new invite (\"Invite to a server\") to come back.",
+            server.name
+        ),
+        move |yes| {
+            let Some(app) = me.upgrade().filter(|_| yes) else {
+                return;
+            };
+            with_tab(&app, |d, _| {
+                d.bot.leave_server(server.id);
+                let mut s = d.settings.borrow_mut();
+                s.servers.remove(&server.id.to_string());
+                if s.last_channel
+                    .as_ref()
+                    .and_then(ChannelRef::ids)
+                    .is_some_and(|(g, _)| g == server.id)
+                {
+                    s.last_channel = None;
+                }
+                drop(s);
+                d.save(&app);
+            });
+        },
+    );
 }
 
 /// Mute or unmute (the tab's button and the tray's menu).
@@ -553,6 +825,7 @@ pub(crate) fn tick(app: &Rc<App>) {
         *d.settings.borrow_mut() = new;
         show_settings(d, tab);
         show_devices(d, tab);
+        show_rules(d, tab);
     });
     if app
         .discord
@@ -586,6 +859,34 @@ pub(crate) fn connect(app: &Rc<App>) {
     on!(on_refresh_devices, refresh_devices);
     on!(on_gate_changed, gate_changed);
     on!(on_toggle_mute, toggle_mute);
+    on!(on_leave_server, leave_server);
+    on!(on_listen_changed, listen_changed);
+
+    macro_rules! on_index {
+        ($callback:ident, $f:expr) => {{
+            let me = Rc::downgrade(app);
+            tab.$callback(move |index| {
+                if let Some(app) = me.upgrade() {
+                    $f(&app, index);
+                }
+            });
+        }};
+    }
+    on_index!(on_output_chosen, choose_output);
+    on_index!(on_auto_join_chosen, choose_auto_join);
+    on_index!(on_follow_chosen, choose_follow);
+    on_index!(on_channel_chosen, |app: &Rc<App>, index| {
+        with_tab(app, |d, tab| {
+            let picked = picked_server(d, tab).map(|s| {
+                let channel = usize::try_from(index)
+                    .ok()
+                    .and_then(|i| s.channels.get(i))
+                    .map(|c| c.id);
+                (s.id, channel)
+            });
+            d.picked.set(picked);
+        });
+    });
 
     let me = Rc::downgrade(app);
     tab.on_auto_login_changed(move |on| {
@@ -608,10 +909,5 @@ pub(crate) fn connect(app: &Rc<App>) {
             });
         }
     });
-    let me = Rc::downgrade(app);
-    tab.on_device_chosen(move |index| {
-        if let Some(app) = me.upgrade() {
-            choose_device(&app, index);
-        }
-    });
+    on_index!(on_device_chosen, choose_device);
 }

@@ -1,7 +1,7 @@
 // The Discord tab: a bot that sends an audio device's sound into a voice channel
 // (documentation/19). The Rust side is src/ui/discord_tab.rs.
 
-import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, Slider } from "std-widgets.slint";
+import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, ScrollView, Slider } from "std-widgets.slint";
 import { ErrorText, Label, Row } from "common.slint";
 
 export global DiscordTab {
@@ -33,6 +33,20 @@ export global DiscordTab {
     in property <string> voice-text;
     in property <string> notice;
     in property <string> notice-hint;
+    // For the picked server: the channel to join after logging in (0 = none), and the person
+    // to follow (0 = nobody).
+    in property <[string]> auto-joins;
+    in-out property <int> auto-join;
+    in property <[string]> follows;
+    in-out property <int> follow;
+
+    // ----- Hearing the channel -----
+    in-out property <bool> listen;
+    in property <[string]> outputs;
+    in-out property <int> output: -1;
+    in-out property <float> volume: 100;
+    in property <string> output-text;
+    in property <bool> output-failed;
 
     // ----- Sound -----
     in property <[string]> devices;
@@ -54,8 +68,14 @@ export global DiscordTab {
     callback setup-help();
     callback auto-login-changed(bool);
     callback server-chosen(int);
+    callback channel-chosen(int);
     callback join();
     callback leave();
+    callback leave-server();
+    callback auto-join-chosen(int);
+    callback follow-chosen(int);
+    callback listen-changed();
+    callback output-chosen(int);
     callback refresh-devices();
     callback device-chosen(int);
     callback gate-changed();
@@ -104,280 +124,397 @@ component Meter inherits Rectangle {
     }
 }
 
-export component DiscordPage inherits VerticalLayout {
-    padding: 10px;
-    spacing: 10px;
+// The tab is taller than the window's smallest size, so it scrolls.
+export component DiscordPage inherits ScrollView {
+    // Only up and down: the content fits the width left beside the scroll bar.
+    content-width: self.visible-width;
+    VerticalLayout {
+        width: root.visible-width;
+        padding: 10px;
+        spacing: 10px;
 
-    if !DiscordTab.available: Label {
-        text: "This build of RTSP Cam has no Discord support.";
-    }
+        if !DiscordTab.available: Label {
+            text: "This build of RTSP Cam has no Discord support.";
+        }
 
-    if DiscordTab.settings-error != "": ErrorText {
-        text: "discord.json can't be read, so changes here won't be saved until it is fixed or deleted: " + DiscordTab.settings-error;
-    }
+        if DiscordTab.settings-error != "": ErrorText {
+            text: "discord.json can't be read, so changes here won't be saved until it is fixed or deleted: " + DiscordTab.settings-error;
+        }
 
-    if DiscordTab.available: GroupBox {
-        title: "Bot";
-        VerticalLayout {
-            spacing: 6px;
-            Row {
-                label: "Bot token";
-                token-edit := LineEdit {
-                    horizontal-stretch: 1;
-                    text <=> DiscordTab.token;
-                    input-type: DiscordTab.show-token ? InputType.text : InputType.password;
-                    placeholder-text: DiscordTab.has-token ? "Saved (paste a new token to replace it)" : "Paste the token from the Developer Portal";
-                    enabled: !DiscordTab.running;
-                    accepted => {
-                        DiscordTab.login();
-                    }
-                }
-
-                Button {
-                    text: "Paste";
-                    enabled: !DiscordTab.running;
-                    clicked => {
-                        token-edit.select-all();
-                        token-edit.paste();
-                    }
-                }
-
-                CheckBox {
-                    text: "Show";
-                    checked <=> DiscordTab.show-token;
-                }
-
-                Button {
-                    text: DiscordTab.running ? "Log out" : "Log in";
-                    min-width: 90px;
-                    enabled: DiscordTab.running || DiscordTab.has-token || DiscordTab.token != "";
-                    clicked => {
-                        if (DiscordTab.running) {
-                            DiscordTab.logout();
-                        } else {
+        if DiscordTab.available: GroupBox {
+            title: "Bot";
+            VerticalLayout {
+                spacing: 6px;
+                Row {
+                    label: "Bot token";
+                    token-edit := LineEdit {
+                        horizontal-stretch: 1;
+                        text <=> DiscordTab.token;
+                        input-type: DiscordTab.show-token ? InputType.text : InputType.password;
+                        placeholder-text: DiscordTab.has-token ? "Saved (paste a new token to replace it)" : "Paste the token from the Developer Portal";
+                        enabled: !DiscordTab.running;
+                        accepted => {
                             DiscordTab.login();
+                        }
+                    }
+
+                    Button {
+                        text: "Paste";
+                        enabled: !DiscordTab.running;
+                        clicked => {
+                            token-edit.select-all();
+                            token-edit.paste();
+                        }
+                    }
+
+                    CheckBox {
+                        text: "Show";
+                        checked <=> DiscordTab.show-token;
+                    }
+
+                    Button {
+                        text: DiscordTab.running ? "Log out" : "Log in";
+                        min-width: 90px;
+                        enabled: DiscordTab.running || DiscordTab.has-token || DiscordTab.token != "";
+                        clicked => {
+                            if (DiscordTab.running) {
+                                DiscordTab.logout();
+                            } else {
+                                DiscordTab.login();
+                            }
+                        }
+                    }
+                }
+
+                Row {
+                    label: "Status";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.status-text;
+                        color: DiscordTab.failed ? #d13438 : Palette.foreground;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if DiscordTab.hint != "": Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.hint;
+                        wrap: word-wrap;
+                    }
+                }
+
+                Row {
+                    label: "";
+                    CheckBox {
+                        text: "Log in when RTSP Cam starts";
+                        checked <=> DiscordTab.auto-login;
+                        toggled => {
+                            DiscordTab.auto-login-changed(self.checked);
+                        }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+
+                    Button {
+                        text: "Invite to a server";
+                        enabled: DiscordTab.can-invite;
+                        clicked => {
+                            DiscordTab.invite();
+                        }
+                    }
+
+                    Button {
+                        text: "How to set up a bot";
+                        clicked => {
+                            DiscordTab.setup-help();
                         }
                     }
                 }
             }
+        }
 
-            Row {
-                label: "Status";
-                Label {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.status-text;
-                    color: DiscordTab.failed ? #d13438 : Palette.foreground;
-                    wrap: word-wrap;
-                }
-            }
+        if DiscordTab.available: GroupBox {
+            title: "Voice";
+            VerticalLayout {
+                spacing: 6px;
+                Row {
+                    label: "Server";
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.servers;
+                        current-index <=> DiscordTab.server;
+                        enabled: DiscordTab.online;
+                        selected => {
+                            DiscordTab.server-chosen(self.current-index);
+                        }
+                    }
 
-            if DiscordTab.hint != "": Row {
-                label: "";
-                Label {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.hint;
-                    wrap: word-wrap;
-                }
-            }
-
-            Row {
-                label: "";
-                CheckBox {
-                    text: "Log in when RTSP Cam starts";
-                    checked <=> DiscordTab.auto-login;
-                    toggled => {
-                        DiscordTab.auto-login-changed(self.checked);
+                    Button {
+                        text: "Leave this server";
+                        enabled: DiscordTab.online && DiscordTab.server >= 0;
+                        clicked => {
+                            DiscordTab.leave-server();
+                        }
                     }
                 }
 
-                Rectangle {
-                    horizontal-stretch: 1;
-                }
+                Row {
+                    label: "Channel";
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.channels;
+                        current-index <=> DiscordTab.channel;
+                        enabled: DiscordTab.online;
+                        selected => {
+                            DiscordTab.channel-chosen(self.current-index);
+                        }
+                    }
 
-                Button {
-                    text: "Invite to a server";
-                    enabled: DiscordTab.can-invite;
-                    clicked => {
-                        DiscordTab.invite();
+                    Button {
+                        text: "Join";
+                        min-width: 90px;
+                        enabled: DiscordTab.online && DiscordTab.channel >= 0;
+                        clicked => {
+                            DiscordTab.join();
+                        }
+                    }
+
+                    Button {
+                        text: "Leave";
+                        min-width: 90px;
+                        enabled: DiscordTab.in-voice;
+                        clicked => {
+                            DiscordTab.leave();
+                        }
                     }
                 }
 
-                Button {
-                    text: "How to set up a bot";
-                    clicked => {
-                        DiscordTab.setup-help();
+                Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.voice-text;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if DiscordTab.notice != "": Row {
+                    label: "";
+                    ErrorText {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.notice + (DiscordTab.notice-hint != "" ? "\n" + DiscordTab.notice-hint : "");
+                    }
+                }
+
+                Row {
+                    label: "After logging in";
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.auto-joins;
+                        current-index <=> DiscordTab.auto-join;
+                        enabled: DiscordTab.online && DiscordTab.server >= 0;
+                        selected => {
+                            DiscordTab.auto-join-chosen(self.current-index);
+                        }
+                    }
+                }
+
+                Row {
+                    label: "Follow";
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.follows;
+                        current-index <=> DiscordTab.follow;
+                        enabled: DiscordTab.online && DiscordTab.server >= 0;
+                        selected => {
+                            DiscordTab.follow-chosen(self.current-index);
+                        }
+                    }
+                }
+
+                Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: "For the server picked above. The bot joins, moves and leaves with the person it follows (in this server).";
+                        wrap: word-wrap;
+                        color: Palette.foreground.transparentize(30%);
                     }
                 }
             }
         }
-    }
 
-    if DiscordTab.available: GroupBox {
-        title: "Voice";
-        VerticalLayout {
-            spacing: 6px;
-            Row {
-                label: "Server";
-                ComboBox {
-                    horizontal-stretch: 1;
-                    model: DiscordTab.servers;
-                    current-index <=> DiscordTab.server;
-                    enabled: DiscordTab.online;
-                    selected => {
-                        DiscordTab.server-chosen(self.current-index);
+        if DiscordTab.available: GroupBox {
+            title: "Sound";
+            VerticalLayout {
+                spacing: 6px;
+                Row {
+                    label: "Source";
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.devices;
+                        current-index <=> DiscordTab.device;
+                        selected => {
+                            DiscordTab.device-chosen(self.current-index);
+                        }
                     }
-                }
-            }
 
-            Row {
-                label: "Channel";
-                ComboBox {
-                    horizontal-stretch: 1;
-                    model: DiscordTab.channels;
-                    current-index <=> DiscordTab.channel;
-                    enabled: DiscordTab.online;
-                }
-
-                Button {
-                    text: "Join";
-                    min-width: 90px;
-                    enabled: DiscordTab.online && DiscordTab.channel >= 0;
-                    clicked => {
-                        DiscordTab.join();
+                    Button {
+                        text: "Refresh";
+                        min-width: 90px;
+                        clicked => {
+                            DiscordTab.refresh-devices();
+                        }
                     }
                 }
 
-                Button {
-                    text: "Leave";
-                    min-width: 90px;
-                    enabled: DiscordTab.in-voice;
-                    clicked => {
-                        DiscordTab.leave();
+                if DiscordTab.input-text != "": Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.input-text;
+                        color: DiscordTab.input-failed ? #d13438 : Palette.foreground;
+                        wrap: word-wrap;
                     }
                 }
-            }
 
-            Row {
-                label: "";
-                Label {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.voice-text;
-                    wrap: word-wrap;
+                Row {
+                    label: "Level";
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Meter {
+                            peak: DiscordTab.peak;
+                            rms: DiscordTab.rms;
+                            threshold: DiscordTab.gate-enabled ? DiscordTab.threshold : -90;
+                            open: DiscordTab.gate-open;
+                            active: DiscordTab.metering;
+                        }
+                    }
+
+                    Label {
+                        width: 70px;
+                        text: DiscordTab.metering ? round(DiscordTab.peak) + " dB" : "";
+                    }
                 }
-            }
 
-            if DiscordTab.notice != "": Row {
-                label: "";
-                ErrorText {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.notice + (DiscordTab.notice-hint != "" ? "\n" + DiscordTab.notice-hint : "");
+                Row {
+                    label: "Noise gate";
+                    CheckBox {
+                        text: "Only send sound louder than";
+                        checked <=> DiscordTab.gate-enabled;
+                        toggled => {
+                            DiscordTab.gate-changed();
+                        }
+                    }
+
+                    Slider {
+                        horizontal-stretch: 1;
+                        minimum: -90;
+                        maximum: 0;
+                        value <=> DiscordTab.threshold;
+                        enabled: DiscordTab.gate-enabled;
+                        changed => {
+                            DiscordTab.gate-changed();
+                        }
+                    }
+
+                    Label {
+                        width: 70px;
+                        text: round(DiscordTab.threshold) + " dB";
+                    }
+                }
+
+                Row {
+                    label: "";
+                    Button {
+                        text: DiscordTab.muted ? "Unmute (start sending)" : "Mute";
+                        min-width: 200px;
+                        height: 40px;
+                        primary: DiscordTab.muted;
+                        clicked => {
+                            DiscordTab.toggle-mute();
+                        }
+                    }
+
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.muted ? "Muted: nothing is sent." : "Sending sound.";
+                    }
                 }
             }
         }
-    }
 
-    if DiscordTab.available: GroupBox {
-        title: "Sound";
-        VerticalLayout {
-            spacing: 6px;
-            Row {
-                label: "Source";
-                ComboBox {
-                    horizontal-stretch: 1;
-                    model: DiscordTab.devices;
-                    current-index <=> DiscordTab.device;
-                    selected => {
-                        DiscordTab.device-chosen(self.current-index);
+        if DiscordTab.available: GroupBox {
+            title: "Hear the channel";
+            VerticalLayout {
+                spacing: 6px;
+                Row {
+                    label: "Output";
+                    CheckBox {
+                        text: "Play the channel on";
+                        checked <=> DiscordTab.listen;
+                        toggled => {
+                            DiscordTab.listen-changed();
+                        }
+                    }
+
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: DiscordTab.outputs;
+                        current-index <=> DiscordTab.output;
+                        selected => {
+                            DiscordTab.output-chosen(self.current-index);
+                        }
                     }
                 }
 
-                Button {
-                    text: "Refresh";
-                    min-width: 90px;
-                    clicked => {
-                        DiscordTab.refresh-devices();
+                Row {
+                    label: "Volume";
+                    Slider {
+                        horizontal-stretch: 1;
+                        minimum: 0;
+                        maximum: 200;
+                        value <=> DiscordTab.volume;
+                        changed => {
+                            DiscordTab.listen-changed();
+                        }
                     }
-                }
-            }
 
-            if DiscordTab.input-text != "": Row {
-                label: "";
-                Label {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.input-text;
-                    color: DiscordTab.input-failed ? #d13438 : Palette.foreground;
-                    wrap: word-wrap;
-                }
-            }
-
-            Row {
-                label: "Level";
-                VerticalLayout {
-                    alignment: center;
-                    horizontal-stretch: 1;
-                    Meter {
-                        peak: DiscordTab.peak;
-                        rms: DiscordTab.rms;
-                        threshold: DiscordTab.gate-enabled ? DiscordTab.threshold : -90;
-                        open: DiscordTab.gate-open;
-                        active: DiscordTab.metering;
+                    Label {
+                        width: 70px;
+                        text: round(DiscordTab.volume) + " %";
                     }
                 }
 
-                Label {
-                    width: 70px;
-                    text: DiscordTab.metering ? round(DiscordTab.peak) + " dB" : "";
-                }
-            }
-
-            Row {
-                label: "Noise gate";
-                CheckBox {
-                    text: "Only send sound louder than";
-                    checked <=> DiscordTab.gate-enabled;
-                    toggled => {
-                        DiscordTab.gate-changed();
+                if DiscordTab.output-text != "": Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: DiscordTab.output-text;
+                        color: DiscordTab.output-failed ? #d13438 : Palette.foreground;
+                        wrap: word-wrap;
                     }
                 }
 
-                Slider {
-                    horizontal-stretch: 1;
-                    minimum: -90;
-                    maximum: 0;
-                    value <=> DiscordTab.threshold;
-                    enabled: DiscordTab.gate-enabled;
-                    changed => {
-                        DiscordTab.gate-changed();
+                Row {
+                    label: "";
+                    Label {
+                        horizontal-stretch: 1;
+                        text: "This plays everyone in the channel. Recording what they say may need their consent where you live.";
+                        wrap: word-wrap;
+                        color: Palette.foreground.transparentize(30%);
                     }
-                }
-
-                Label {
-                    width: 70px;
-                    text: round(DiscordTab.threshold) + " dB";
-                }
-            }
-
-            Row {
-                label: "";
-                Button {
-                    text: DiscordTab.muted ? "Unmute (start sending)" : "Mute";
-                    min-width: 200px;
-                    height: 40px;
-                    primary: DiscordTab.muted;
-                    clicked => {
-                        DiscordTab.toggle-mute();
-                    }
-                }
-
-                Label {
-                    horizontal-stretch: 1;
-                    text: DiscordTab.muted ? "Muted: nothing is sent." : "Sending sound.";
                 }
             }
         }
-    }
 
-    Rectangle {
-        vertical-stretch: 1;
+        Rectangle {
+            vertical-stretch: 1;
+        }
     }
 }

@@ -43,8 +43,12 @@ pub struct Online {
     /// The servers the bot is in, by name, each with its voice and stage channels.
     pub servers: Vec<Server>,
     pub voice: Option<VoiceStatus>,
-    pub input: InputStatus,
+    pub input: DeviceStatus,
     pub muted: bool,
+    /// The channel is played on an output device (documentation/19 §4 D5).
+    pub listening: bool,
+    /// The output the channel is played on, while listening in a channel.
+    pub output: DeviceStatus,
     /// The last thing that went wrong while online (a failed join, a lost device), with what
     /// to do about it. Cleared by the next successful join.
     pub notice: Option<Notice>,
@@ -70,12 +74,27 @@ pub struct Server {
     pub name: String,
     /// Voice and stage channels, in Discord's order.
     pub channels: Vec<VoiceChannel>,
+    /// The people in the server's voice channels (not the bot), by name.
+    pub members: Vec<VoiceMember>,
 }
 
 impl Server {
     pub fn channel(&self, id: u64) -> Option<&VoiceChannel> {
         self.channels.iter().find(|c| c.id == id)
     }
+
+    pub fn member(&self, id: u64) -> Option<&VoiceMember> {
+        self.members.iter().find(|m| m.id == id)
+    }
+}
+
+/// Someone in a voice channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceMember {
+    pub id: u64,
+    /// Their name in the server (nickname, else display name, else user name).
+    pub name: String,
+    pub channel_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +116,21 @@ pub struct VoiceStatus {
     pub lag_ms: u32,
     /// 20 ms blocks thrown away so far because sending fell behind.
     pub dropped: u64,
+    /// In a stage channel: whether the bot may speak. `None` in a voice channel.
+    pub stage: Option<Stage>,
+    /// How many people were heard just now (only counted while listening).
+    pub speakers: u32,
+}
+
+/// The bot's place in a stage channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// A speaker: the audience hears it.
+    Speaker,
+    /// It asked to speak and waits for a stage moderator to accept.
+    Requested,
+    /// In the audience: nobody hears it, and asking to speak failed.
+    Audience,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,10 +144,10 @@ pub enum VoiceState {
     },
 }
 
-/// The sound source.
+/// A sound device: the source, or the output the channel is played on.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum InputStatus {
-    /// Not recording (the device opens when the bot joins a channel).
+pub enum DeviceStatus {
+    /// Not open (devices open when the bot joins a channel).
     #[default]
     Closed,
     Open {

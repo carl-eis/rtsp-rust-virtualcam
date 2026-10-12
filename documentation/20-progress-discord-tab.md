@@ -1,5 +1,9 @@
 # 20 — Progress: Discord Tab, phases D0–D4
 
+> Continued in [21](21-progress-discord-tab-d5-d8.md) (D5, D6, D8). 21 §1 has the first checks
+> against Discord, and 21 §2 a bug in D2 found there: the bot joined but sent nothing (no PCM
+> codec in symphonia).
+
 Date: 2026-10-12. Branch `feat/audio-tab`. Builds the first release of the plan in
 [19](19-discord-tab-plan.md) (D0–D4): the `rtspcam-audio` and `rtspcam-discord` crates,
 `discord.json`, and the Discord tab. **Nothing has been tried against Discord yet**: there was

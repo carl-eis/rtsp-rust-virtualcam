@@ -48,7 +48,7 @@ Early development; version 1.6.0.
 | Passwords in the config | DPAPI | key in Secret Service, or a private key file | key in Keychain, or a private key file |
 | Start at login | Run key | XDG autostart | LaunchAgent |
 | Package | Inno Setup installer (not yet tried on a clean PC) | `.deb`, `.rpm` | none |
-| Discord tab (bot sends a device's sound to a voice channel) | built; capture, playback and loopback checked, **not yet tried against Discord** | builds; not yet run | builds; not yet run |
+| Discord tab (a bot sends a device's sound to a voice channel and plays the channel) | logging in, joining (with DAVE) and following checked against Discord; **not yet heard by a person** | builds; not yet run | builds; not yet run |
 
 Not built yet: the rest of the hardening (soak tests, compatibility matrix, fuzzing, crash
 reports; [08.1 §7](documentation/08.1-Plan-Phase-8.md#7-the-rest-of-phase-8-in-short)),
@@ -76,7 +76,9 @@ of checks that still need a person.
 - **Tray:** `--minimized` starts in the tray, `--headless` runs without a window (Ctrl+C quits).
 - **Discord tab:** a Discord bot that sends any audio input (a microphone, VB-Cable, a line
   input, or on Windows what the PC plays) into a voice channel, with a noise gate, a level meter
-  and mute (also in the tray). Starts muted; nothing runs until you log in. Setup:
+  and mute (also in the tray), and can play the channel on your speakers. Per server it can
+  join a channel after logging in or follow a person from channel to channel; in stage
+  channels it asks to speak. Starts muted; nothing runs until you log in. Setup:
   [documentation/manual/discord.md](documentation/manual/discord.md).
 - **Hardware decoding** (Windows): H.264 and H.265 are decoded on the graphics card when it can,
   and pictures are shrunk there to the size apps ask for. **Settings** shows the card and can

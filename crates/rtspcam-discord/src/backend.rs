@@ -5,24 +5,29 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rtspcam_audio::{BlockQueue, CHANNELS, SAMPLE_RATE};
+use rtspcam_audio::BlockQueue;
 use serenity::all::{
-    ChannelType, Client, Context, GatewayIntents, Guild, GuildChannel, GuildId, Http, Message,
-    PartialGuild, Ready, ShardManager, UnavailableGuild, UserId, VoiceState as SerenityVoiceState,
+    ChannelId, ChannelType, Client, Context, GatewayIntents, Guild, GuildChannel, GuildId, Http,
+    Message, PartialGuild, Ready, ShardManager, UnavailableGuild, UserId,
+    VoiceState as SerenityVoiceState,
 };
 use serenity::cache::Cache;
 use serenity::client::EventHandler;
+use serenity::json::json;
+use songbird::driver::{Channels, DecodeConfig, DecodeMode, SampleRate};
 use songbird::error::JoinError;
 use songbird::events::context_data::DisconnectReason;
-use songbird::input::{Input, RawAdapter};
-use songbird::{CoreEvent, Event as SongbirdEvent, EventContext, SerenityInit as _, Songbird};
+use songbird::tracks::PlayMode;
+use songbird::{
+    CoreEvent, Event as SongbirdEvent, EventContext, SerenityInit as _, Songbird, TrackEvent,
+};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-use crate::audio::QueueReader;
+use crate::audio::{ListenShared, sound_input};
 use crate::error::BotError;
 use crate::session::{Backend, Event, LoginInfo};
-use crate::status::{Server, VoiceChannel};
+use crate::status::{Server, Stage, VoiceChannel, VoiceMember};
 
 /// Servers, channels and the bot's own voice state; nothing privileged.
 const INTENTS: GatewayIntents = GatewayIntents::GUILDS.union(GatewayIntents::GUILD_VOICE_STATES);
@@ -31,6 +36,7 @@ pub(crate) struct SerenityBackend {
     songbird: Arc<Songbird>,
     cache: Option<Arc<Cache>>,
     shards: Option<Arc<ShardManager>>,
+    http: Option<Arc<Http>>,
     client: Option<JoinHandle<()>>,
     bot_id: Option<UserId>,
     events: Option<UnboundedSender<Event>>,
@@ -42,6 +48,7 @@ impl SerenityBackend {
             songbird: Songbird::serenity(),
             cache: None,
             shards: None,
+            http: None,
             client: None,
             bot_id: None,
             events: None,
@@ -80,6 +87,7 @@ impl Backend for SerenityBackend {
             .map_err(map_serenity)?;
         self.cache = Some(client.cache.clone());
         self.shards = Some(client.shard_manager.clone());
+        self.http = Some(client.http.clone());
         self.client = Some(tokio::spawn(async move {
             if let Err(e) = client.start().await {
                 let _ = events.send(Event::GatewayLost(map_serenity(e)));
@@ -113,6 +121,7 @@ impl Backend for SerenityBackend {
         channel: u64,
         queue: Arc<BlockQueue>,
         muted: bool,
+        listen: Arc<ListenShared>,
     ) -> Result<(), BotError> {
         let (Some(guild_id), Some(channel_id)) = (NonZeroU64::new(guild), NonZeroU64::new(channel))
         else {
@@ -142,12 +151,25 @@ impl Backend for SerenityBackend {
         ] {
             call.add_global_event(SongbirdEvent::Core(event), events.clone());
         }
+        let decode = listen.enabled();
+        call.add_global_event(
+            SongbirdEvent::Core(CoreEvent::VoiceTick),
+            ListenEvents { listen },
+        );
+        set_decoding(&mut call, decode);
         if let Err(e) = call.mute(muted).await {
             tracing::warn!(error = %e, "could not set the bot's mute state");
         }
-        let input: Input =
-            RawAdapter::new(QueueReader::new(queue), SAMPLE_RATE, CHANNELS as u32).into();
-        call.play_only_input(input);
+        let track = call.play_only_input(sound_input(queue));
+        if let Err(e) = track.add_event(
+            SongbirdEvent::Track(TrackEvent::Error),
+            TrackErrors {
+                events: events.events.clone(),
+                guild,
+            },
+        ) {
+            tracing::debug!(error = %e, "could not watch the sound track");
+        }
         Ok(())
     }
 
@@ -170,6 +192,37 @@ impl Backend for SerenityBackend {
         }
     }
 
+    async fn set_listening(&mut self, guild: u64, on: bool) {
+        if let Some(call) = NonZeroU64::new(guild).and_then(|id| self.songbird.get(id)) {
+            set_decoding(&mut *call.lock().await, on);
+        }
+    }
+
+    async fn speak_on_stage(&mut self, guild: u64, channel: u64) -> Result<Stage, BotError> {
+        let http = self.http()?;
+        let guild = GuildId::new(guild);
+        let channel = ChannelId::new(channel);
+        // Becoming a speaker needs Mute Members; without it, ask to speak instead.
+        let speak = json!({ "channel_id": channel, "suppress": false });
+        match http.edit_voice_state_me(guild, &speak).await {
+            Ok(()) => return Ok(Stage::Speaker),
+            Err(e) => tracing::info!(error = %e, "can't become a stage speaker; asking to speak"),
+        }
+        let ask = json!({
+            "channel_id": channel,
+            "request_to_speak_timestamp": serenity::model::Timestamp::now(),
+        });
+        http.edit_voice_state_me(guild, &ask)
+            .await
+            .map_err(map_serenity)?;
+        Ok(Stage::Requested)
+    }
+
+    async fn leave_server(&mut self, guild: u64) -> Result<(), BotError> {
+        let http = self.http()?;
+        GuildId::new(guild).leave(&http).await.map_err(map_serenity)
+    }
+
     async fn logout(&mut self) {
         let guilds: Vec<_> = self.songbird.iter().map(|(id, _)| id).collect();
         for guild in guilds {
@@ -182,6 +235,29 @@ impl Backend for SerenityBackend {
             client.abort();
         }
         self.cache = None;
+        self.http = None;
+    }
+}
+
+impl SerenityBackend {
+    fn http(&self) -> Result<Arc<Http>, BotError> {
+        self.http
+            .clone()
+            .ok_or_else(|| BotError::Other("not logged in".into()))
+    }
+}
+
+/// Decodes what is heard (to play the channel), or only decrypts it, which costs next to
+/// nothing, while not listening.
+fn set_decoding(call: &mut songbird::Call, on: bool) {
+    let mode = if on {
+        DecodeMode::Decode(DecodeConfig::new(Channels::Stereo, SampleRate::Hz48000))
+    } else {
+        DecodeMode::Decrypt
+    };
+    if call.config().decode_mode != mode {
+        let config = call.config().clone().decode_mode(mode);
+        call.set_config(config);
     }
 }
 
@@ -193,9 +269,29 @@ fn server_of(guild: &Guild, bot_id: Option<UserId>) -> Server {
         .filter(|c| matches!(c.kind, ChannelType::Voice | ChannelType::Stage))
         .collect();
     channels.sort_by_key(|c| (c.position, c.id));
+    let mut members: Vec<VoiceMember> = guild
+        .voice_states
+        .values()
+        .filter(|v| Some(v.user_id) != bot_id)
+        .filter_map(|v| {
+            let channel = v.channel_id?;
+            let name = guild
+                .members
+                .get(&v.user_id)
+                .or(v.member.as_ref())
+                .map_or_else(|| v.user_id.to_string(), |m| m.display_name().to_owned());
+            Some(VoiceMember {
+                id: v.user_id.get(),
+                name,
+                channel_id: channel.get(),
+            })
+        })
+        .collect();
+    members.sort_by_key(|m| m.name.to_lowercase());
     Server {
         id: guild.id.get(),
         name: guild.name.clone(),
+        members,
         channels: channels
             .into_iter()
             .map(|c| {
@@ -263,11 +359,16 @@ impl Handler {
 impl EventHandler for Handler {
     async fn ready(&self, _: Context, ready: Ready) {
         tracing::info!(servers = ready.guilds.len(), "Discord gateway ready");
-        self.send(Event::Ready);
+        // The servers arrive after this, one by one; `cache_ready` says when all have.
+        if ready.guilds.is_empty() {
+            self.send(Event::Ready);
+        } else {
+            self.send(Event::ServersChanged);
+        }
     }
 
     async fn cache_ready(&self, _: Context, _: Vec<GuildId>) {
-        self.send(Event::ServersChanged);
+        self.send(Event::Ready);
     }
 
     async fn guild_create(&self, _: Context, _: Guild, _: Option<bool>) {
@@ -300,15 +401,67 @@ impl EventHandler for Handler {
         _: Option<SerenityVoiceState>,
         new: SerenityVoiceState,
     ) {
-        if new.user_id != self.bot_id {
+        let Some(guild) = new.guild_id else {
             return;
-        }
-        if let Some(guild) = new.guild_id {
+        };
+        let channel = new.channel_id.map(|c| c.get());
+        if new.user_id == self.bot_id {
             self.send(Event::VoiceMoved {
                 guild: guild.get(),
-                channel: new.channel_id.map(|c| c.get()),
+                channel,
+                suppressed: new.suppress,
+            });
+        } else {
+            self.send(Event::UserVoice {
+                guild: guild.get(),
+                user: new.user_id.get(),
+                channel,
             });
         }
+    }
+}
+
+/// The track that sends the sound failed: reported as a voice error, so the session shows it
+/// and joins again (which makes a new track).
+struct TrackErrors {
+    events: UnboundedSender<Event>,
+    guild: u64,
+}
+
+#[async_trait]
+impl songbird::EventHandler for TrackErrors {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<SongbirdEvent> {
+        if let EventContext::Track(tracks) = ctx {
+            for (state, _) in *tracks {
+                if let PlayMode::Errored(e) = &state.playing {
+                    tracing::warn!(guild = self.guild, error = %e, "the sound track failed");
+                    let _ = self.events.send(Event::VoiceLost {
+                        guild: self.guild,
+                        error: BotError::Voice(format!("the sound could not be sent ({e})")),
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// What is heard in the channel: each 20 ms tick, the decoded sound of everyone speaking.
+struct ListenEvents {
+    listen: Arc<ListenShared>,
+}
+
+#[async_trait]
+impl songbird::EventHandler for ListenEvents {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<SongbirdEvent> {
+        if let EventContext::VoiceTick(tick) = ctx {
+            self.listen.tick(
+                tick.speaking
+                    .values()
+                    .filter_map(|v| v.decoded_voice.as_deref()),
+            );
+        }
+        None
     }
 }
 

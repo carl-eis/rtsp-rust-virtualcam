@@ -5,6 +5,8 @@
 //! the bot token. It is read and written by the same [`JsonStore`] code (atomic save, `.bak`,
 //! watcher).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -20,8 +22,11 @@ pub const DISCORD_VERSION: u64 = 1;
 /// The quietest gate threshold that can be set, in dBFS (the meter's floor).
 pub const MIN_THRESHOLD_DB: f32 = -90.0;
 
-/// The device id that follows the system's default input.
+/// The device id that follows the system's default input (or output).
 pub const DEFAULT_INPUT: &str = "default";
+
+/// The loudest the channel can be played, in percent.
+pub const MAX_VOLUME_PERCENT: u32 = 200;
 
 /// Reads and writes `discord.json`.
 pub type DiscordStore = JsonStore<DiscordSettings>;
@@ -52,8 +57,14 @@ pub struct DiscordSettings {
     /// The channel the bot was last in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_channel: Option<ChannelRef>,
-    /// Join [`last_channel`](Self::last_channel) again after logging in.
+    /// Join [`last_channel`](Self::last_channel) again after logging in, unless a server's
+    /// rules pick a channel.
     pub rejoin_last_channel: bool,
+    /// Hearing the channel.
+    pub listen: ListenConfig,
+    /// Per server, by server id: what the bot joins on its own.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub servers: BTreeMap<String, ServerConfig>,
     /// Fields this build doesn't know about, kept so saving doesn't drop them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -70,6 +81,8 @@ impl Default for DiscordSettings {
             gate: GateConfig::default(),
             last_channel: None,
             rejoin_last_channel: true,
+            listen: ListenConfig::default(),
+            servers: BTreeMap::new(),
             extra: Map::new(),
         }
     }
@@ -101,6 +114,55 @@ impl Default for GateConfig {
     }
 }
 
+/// Playing the channel on an output device. Off by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ListenConfig {
+    pub enabled: bool,
+    /// [`DEFAULT_INPUT`] (the system's default output) or an `output:` id from `rtspcam-audio`.
+    pub output_device: String,
+    /// 100 plays the channel as received; up to [`MAX_VOLUME_PERCENT`].
+    pub volume_percent: u32,
+}
+
+impl Default for ListenConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            output_device: DEFAULT_INPUT.to_owned(),
+            volume_percent: 100,
+        }
+    }
+}
+
+/// What the bot does on its own in one server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// A voice channel to join after logging in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_join_channel: Option<String>,
+    /// A user (by id) the bot follows from channel to channel in this server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_user: Option<String>,
+}
+
+impl ServerConfig {
+    pub fn is_empty(&self) -> bool {
+        self.auto_join_channel.is_none() && self.follow_user.is_none()
+    }
+
+    /// The auto-join channel's id, if valid.
+    pub fn auto_join(&self) -> Option<u64> {
+        self.auto_join_channel.as_deref().and_then(parse_id)
+    }
+
+    /// The followed user's id, if valid.
+    pub fn follow(&self) -> Option<u64> {
+        self.follow_user.as_deref().and_then(parse_id)
+    }
+}
+
 /// A voice channel in a server, by id. Ids are strings, as Discord writes them (they don't
 /// fit in a JSON number for every reader).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,7 +185,8 @@ impl ChannelRef {
     }
 }
 
-fn parse_id(id: &str) -> Option<u64> {
+/// A Discord id (a non-zero number, written as a string).
+pub fn parse_id(id: &str) -> Option<u64> {
     id.trim().parse().ok().filter(|n| *n != 0)
 }
 
@@ -136,6 +199,12 @@ pub enum DiscordProblem {
     InvalidChannel,
     #[error("the input device must not be empty")]
     NoInput,
+    #[error("the channel's volume must be between 0 and 200 %")]
+    VolumeOutOfRange,
+    #[error("the output device must not be empty")]
+    NoOutput,
+    #[error("server {0}: the server, channel and user ids must be numbers")]
+    InvalidServerRule(String),
     #[error(
         "the saved bot token can't be decrypted (was the file copied from another user or PC?); paste it again"
     )]
@@ -160,6 +229,21 @@ impl DiscordSettings {
         if self.input_device.trim().is_empty() {
             problems.push(DiscordProblem::NoInput);
         }
+        if self.listen.volume_percent > MAX_VOLUME_PERCENT {
+            problems.push(DiscordProblem::VolumeOutOfRange);
+        }
+        if self.listen.output_device.trim().is_empty() {
+            problems.push(DiscordProblem::NoOutput);
+        }
+        for (server, rules) in &self.servers {
+            let bad = |id: &Option<String>| id.as_deref().is_some_and(|id| parse_id(id).is_none());
+            if parse_id(server).is_none()
+                || bad(&rules.auto_join_channel)
+                || bad(&rules.follow_user)
+            {
+                problems.push(DiscordProblem::InvalidServerRule(server.clone()));
+            }
+        }
         if self
             .token
             .as_ref()
@@ -176,6 +260,26 @@ impl DiscordSettings {
             .as_ref()
             .and_then(Secret::expose)
             .filter(|t| !t.trim().is_empty())
+    }
+
+    /// The channel's volume as a factor (1.0 = as received), clamped to the allowed range.
+    pub fn volume(&self) -> f32 {
+        self.listen.volume_percent.min(MAX_VOLUME_PERCENT) as f32 / 100.0
+    }
+
+    /// The rules of one server.
+    pub fn server(&self, guild_id: u64) -> Option<&ServerConfig> {
+        self.servers.get(&guild_id.to_string())
+    }
+
+    /// Changes one server's rules; a server with none left is removed.
+    pub fn edit_server(&mut self, guild_id: u64, f: impl FnOnce(&mut ServerConfig)) {
+        let key = guild_id.to_string();
+        let rules = self.servers.entry(key.clone()).or_default();
+        f(rules);
+        if rules.is_empty() {
+            self.servers.remove(&key);
+        }
     }
 
     /// The gate threshold, clamped to the allowed range.
@@ -277,6 +381,54 @@ mod tests {
         assert_eq!(s.threshold_db(), 0.0);
         s.gate.threshold_db = f32::NAN;
         assert_eq!(s.threshold_db(), -50.0);
+    }
+
+    #[test]
+    fn listening_and_server_rules() {
+        let (_dir, store) = store();
+        let mut settings = DiscordSettings::default();
+        assert!(
+            !settings.listen.enabled,
+            "hearing the channel is off by default"
+        );
+        assert_eq!(settings.volume(), 1.0);
+        settings.edit_server(42, |r| r.follow_user = Some("7".into()));
+        settings.edit_server(43, |r| r.auto_join_channel = Some("9".into()));
+        store.save(&settings).unwrap();
+        let back = store.load().unwrap();
+        assert_eq!(back.server(42).unwrap().follow(), Some(7));
+        assert_eq!(back.server(43).unwrap().auto_join(), Some(9));
+        assert!(back.validate().is_empty());
+
+        // Clearing the last rule removes the server.
+        settings.edit_server(42, |r| r.follow_user = None);
+        assert!(settings.server(42).is_none());
+        // None at all: not written.
+        let text = serde_json::to_string(&DiscordSettings::default()).unwrap();
+        assert!(!text.contains("servers"), "{text}");
+    }
+
+    #[test]
+    fn invalid_listen_and_server_rules() {
+        let mut s = DiscordSettings::default();
+        s.listen.volume_percent = 500;
+        s.listen.output_device = String::new();
+        s.servers.insert(
+            "12".into(),
+            ServerConfig {
+                auto_join_channel: None,
+                follow_user: Some("bob".into()),
+            },
+        );
+        assert_eq!(
+            s.validate(),
+            [
+                DiscordProblem::VolumeOutOfRange,
+                DiscordProblem::NoOutput,
+                DiscordProblem::InvalidServerRule("12".into())
+            ]
+        );
+        assert_eq!(s.volume(), 2.0);
     }
 
     #[test]

@@ -31,6 +31,8 @@ pub enum BotError {
     Voice(String),
     #[error("the sound source failed: {0}")]
     Input(AudioError),
+    #[error("the output for hearing the channel failed: {0}")]
+    Output(AudioError),
     #[error("{0}")]
     Other(String),
 }
@@ -68,6 +70,8 @@ impl BotError {
             Self::Voice(_) => "Try joining again in a moment.".into(),
             Self::Input(_) => "Pick another sound source, or plug the device back in. \
                                RTSP Cam retries every few seconds."
+                .into(),
+            Self::Output(_) => "Pick another output, or plug the device back in. RTSP Cam                                 retries every few seconds."
                 .into(),
             Self::Other(_) => "Try again. The log (Help > Open logs folder) has details.".into(),
         }

@@ -26,16 +26,24 @@ serenity = { version = "0.12.5", default-features = false, features = [
 songbird = { version = "=0.6.1", default-features = false, features = [
     "driver",
     "gateway",
+    # Hearing the channel (documentation/19 §4 D5): decoded sound per speaker.
+    "receive",
     "rustls",
     "serenity",
     "tungstenite",
 ] }
+# Songbird leaves the codecs to the app: `RawAdapter` (our live sound) is 32-bit float PCM, which
+# symphonia only decodes with `pcm`. Without it every track fails with "no compatible track
+# found" and nothing is sent.
+symphonia = { version = "0.5", default-features = false, features = ["pcm"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# Log output for examples/bot_check.rs.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

@@ -1,14 +1,15 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use rtspcam_audio::{AudioError, DeviceInfo, GateSettings};
+use rtspcam_audio::{AudioError, DeviceInfo, DeviceKind, GateSettings};
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::audio::{AudioShared, DeviceInputs};
+use crate::audio::{AudioDevices, AudioShared};
 use crate::backend::SerenityBackend;
-use crate::session::{Command, Session, SessionOptions, StatusOut};
+use crate::session::{Command, ListenSettings, ServerRules, Session, SessionOptions, StatusOut};
 use crate::status::{BotStatus, Meter};
 
 /// Worker threads of the bot's runtime: the gateway, voice and the session are light.
@@ -82,7 +83,7 @@ impl DiscordBot {
         let online = self.status.borrow();
         let open = matches!(
             online.online().map(|o| &o.input),
-            Some(crate::status::InputStatus::Open { .. })
+            Some(crate::status::DeviceStatus::Open { .. })
         );
         open.then(|| running.shared.meter())
     }
@@ -119,7 +120,7 @@ impl DiscordBot {
         };
         let session = Session::new(
             SerenityBackend::new(),
-            Arc::new(DeviceInputs),
+            Arc::new(AudioDevices),
             out,
             shared.clone(),
             options,
@@ -191,6 +192,23 @@ impl DiscordBot {
         self.options().gate = gate;
         self.send(Command::SetGate(gate));
     }
+
+    /// Hearing the channel: on or off, the output device and the volume.
+    pub fn set_listen(&self, listen: ListenSettings) {
+        self.options().listen = listen.clone();
+        self.send(Command::SetListen(listen));
+    }
+
+    /// What to join on its own, per server (auto-join, follow a user).
+    pub fn set_server_rules(&self, rules: BTreeMap<u64, ServerRules>) {
+        self.options().servers = rules.clone();
+        self.send(Command::SetServerRules(rules));
+    }
+
+    /// Takes the bot out of a server. It needs a new invite to come back.
+    pub fn leave_server(&self, guild: u64) {
+        self.send(Command::LeaveServer(guild));
+    }
 }
 
 impl Drop for DiscordBot {
@@ -226,18 +244,34 @@ fn stop(running: Running, limit: Duration) {
     runtime.shutdown_timeout(Duration::from_millis(500));
 }
 
-/// Lists the devices that can be a sound source, on a worker thread (never the UI thread: on
-/// Windows it sets up COM), and hands the result to `reply` on that thread. Input devices
-/// first; then output devices where the OS can record what they play.
-pub fn list_sources(reply: impl FnOnce(Result<Vec<DeviceInfo>, AudioError>) + Send + 'static) {
+/// The audio devices, for the pickers.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceLists {
+    /// What can be sent: input devices, then output devices where the OS can record what they
+    /// play.
+    pub sources: Vec<DeviceInfo>,
+    /// Where the channel can be played.
+    pub outputs: Vec<DeviceInfo>,
+}
+
+/// Lists the audio devices on a worker thread (never the UI thread: on Windows it sets up COM),
+/// and hands the result to `reply` on that thread.
+pub fn list_devices(reply: impl FnOnce(Result<DeviceLists, AudioError>) + Send + 'static) {
     let spawned = std::thread::Builder::new()
         .name("audio-devices".into())
         .spawn(move || {
             let loopback = rtspcam_audio::loopback_supported();
             reply(rtspcam_audio::devices().map(|list| {
-                list.into_iter()
-                    .filter(|d| loopback || d.kind == rtspcam_audio::DeviceKind::Input)
-                    .collect()
+                let outputs = list
+                    .iter()
+                    .filter(|d| d.kind == DeviceKind::Output)
+                    .cloned()
+                    .collect();
+                let sources = list
+                    .into_iter()
+                    .filter(|d| loopback || d.kind == DeviceKind::Input)
+                    .collect();
+                DeviceLists { sources, outputs }
             }));
         });
     if let Err(e) = spawned {

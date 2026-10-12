@@ -11,6 +11,7 @@
 //!   a lag limit it drops the oldest blocks, so live sound stays live.
 //! - [`Gate`] and [`Level`]: a noise gate and a level meter, per block.
 //! - [`Playback`]: plays blocks from a queue on an output device (silence when it runs dry).
+//! - [`Mix`]: sums several voices into one block and soft-clips it.
 //!
 //! `cpal` hides the OS (WASAPI, ALSA, CoreAudio), so this crate has no OS-specific code.
 //! Opening and listing devices can be slow and, on Windows, sets up COM on the calling thread:
@@ -23,6 +24,7 @@ mod device;
 mod error;
 mod gate;
 mod meter;
+mod mix;
 mod playback;
 mod queue;
 
@@ -33,5 +35,6 @@ pub use device::{DEFAULT_DEVICE, DeviceInfo, DeviceKind, devices, loopback_suppo
 pub use error::AudioError;
 pub use gate::{Gate, GateSettings};
 pub use meter::{Level, SILENCE_DB, to_db};
+pub use mix::{Mix, soft_clip};
 pub use playback::Playback;
 pub use queue::{BlockQueue, DEFAULT_LAG_LIMIT};
