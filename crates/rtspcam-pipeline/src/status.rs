@@ -68,8 +68,16 @@ pub struct StreamStats {
     pub latency: Duration,
     /// Average time the decoder took per picture (including a copy from the GPU).
     pub decode_time: Duration,
+    /// Average lag behind live: how much later than the fastest picture of the session the
+    /// pictures were ready, against the camera's timestamps. Steady means a fixed latency;
+    /// rising means latency is building up.
+    pub drift: Duration,
     /// Totals for this session.
     pub frames_decoded: u64,
     pub decode_errors: u64,
     pub packets_lost: u64,
+    /// Pictures decoded but not shown, to catch up with live.
+    pub frames_skipped: u64,
+    /// Times catching up skipped to the next key frame.
+    pub resyncs: u64,
 }

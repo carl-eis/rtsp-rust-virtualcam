@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use crate::decode::{self, Decoder, DecoderChoice, create_decoder_with};
 use crate::error::{ErrorKind, PipelineError};
 use crate::frame::AtomicSize;
+use crate::latency::{LatencyCap, Verdict};
 use crate::status::{StreamState, StreamStats};
 use crate::{EncodedFrame, Frame, FrameBus, RtspSource, SourceOptions, VideoCodec};
 
@@ -92,6 +93,10 @@ pub struct PipelineOptions {
     /// than `stall_timeout`, because some cameras send a key frame only every few seconds.
     pub first_picture_timeout: Duration,
     pub backoff: BackoffConfig,
+    /// How far behind live a picture may fall before the pipeline catches up by not
+    /// presenting pictures, and then by skipping to the next key frame (see
+    /// `latency.rs`). `None` only measures the lag ([`StreamStats::drift`]).
+    pub latency_cap: Option<Duration>,
 }
 
 impl PipelineOptions {
@@ -102,6 +107,7 @@ impl PipelineOptions {
             stall_timeout: Duration::from_secs(5),
             first_picture_timeout: Duration::from_secs(15),
             backoff: BackoffConfig::default(),
+            latency_cap: Some(Duration::from_millis(350)),
         }
     }
 }
@@ -127,7 +133,13 @@ enum DecodeEvent {
         latency: Duration,
         /// The decoder's time for this picture.
         decode_time: Duration,
+        /// How far behind live it was.
+        lag: Duration,
+        /// `false`: decoded but not presented, to catch up.
+        shown: bool,
     },
+    /// Too far behind live: frames are dropped until the next key frame.
+    Resync,
     /// One frame failed; decoding resumes at the next key frame.
     Error(PipelineError),
     /// Decoding can't continue for this session (no decoder for the codec).
@@ -175,10 +187,13 @@ impl Pipeline {
         let bus = frames.clone();
         let thread_name = name.clone();
         let thread_limit = limit.clone();
+        let latency_cap = opts.latency_cap;
         let decode_thread = thread::Builder::new()
             .name(format!("decode {name}"))
             .spawn(move || {
-                DecodeLoop::new(&thread_name, event_tx, bus, thread_limit, create).run(msg_rx);
+                DecodeLoop::new(&thread_name, event_tx, bus, thread_limit, create)
+                    .with_latency_cap(latency_cap)
+                    .run(msg_rx);
             })
             .expect("failed to spawn decode thread");
 
@@ -332,8 +347,13 @@ async fn run_session(
                     tracing::info!(stream = name, decoder, "decoder ready");
                     stats.totals.decoder = decoder;
                 }
-                DecodeEvent::Picture { source, decoded, latency, decode_time } => {
+                DecodeEvent::Picture { source, decoded, latency, decode_time, lag, shown } => {
                     stats.picture(source, decoded, latency, decode_time);
+                    stats.lag(lag, shown);
+                }
+                DecodeEvent::Resync => {
+                    tracing::info!(stream = name, "too far behind live; skipping to the next key frame");
+                    stats.resync();
                 }
                 DecodeEvent::Error(e) => {
                     stats.totals.decode_errors += 1;
@@ -342,9 +362,12 @@ async fn run_session(
                 DecodeEvent::Fatal(e) => return (e, stats.streamed()),
             },
             _ = tick.tick() => {
-                let (since, limit) = match stats.last_picture {
-                    Some(t) => (t, opts.stall_timeout),
-                    None => (started, opts.first_picture_timeout),
+                // After a resync, the next picture comes with the next key frame, like the
+                // first one of a session.
+                let (since, limit) = match (stats.last_picture, stats.resynced) {
+                    (Some(t), None) => (t, opts.stall_timeout),
+                    (Some(_), Some(t)) => (t, opts.first_picture_timeout),
+                    (None, _) => (started, opts.first_picture_timeout),
                 };
                 if since.elapsed() > limit {
                     let what = if stats.streamed() { "no pictures" } else { "no picture yet" };
@@ -374,7 +397,10 @@ struct StatsWindow {
     bytes: u64,
     latency_sum: Duration,
     decode_sum: Duration,
+    lag_sum: Duration,
     last_picture: Option<Instant>,
+    /// When the pipeline last skipped to the next key frame, until a picture comes.
+    resynced: Option<Instant>,
 }
 
 impl StatsWindow {
@@ -390,16 +416,21 @@ impl StatsWindow {
                 bitrate: 0,
                 latency: Duration::ZERO,
                 decode_time: Duration::ZERO,
+                drift: Duration::ZERO,
                 frames_decoded: 0,
                 decode_errors: 0,
                 packets_lost: 0,
+                frames_skipped: 0,
+                resyncs: 0,
             },
             window_start: Instant::now(),
             pictures: 0,
             bytes: 0,
             latency_sum: Duration::ZERO,
             decode_sum: Duration::ZERO,
+            lag_sum: Duration::ZERO,
             last_picture: None,
+            resynced: None,
         }
     }
 
@@ -421,7 +452,21 @@ impl StatsWindow {
         self.pictures += 1;
         self.latency_sum += latency;
         self.decode_sum += decode_time;
+        // Pictures not shown still count: catching up never looks like a stall.
         self.last_picture = Some(Instant::now());
+        self.resynced = None;
+    }
+
+    fn lag(&mut self, lag: Duration, shown: bool) {
+        self.lag_sum += lag;
+        if !shown {
+            self.totals.frames_skipped += 1;
+        }
+    }
+
+    fn resync(&mut self) {
+        self.totals.resyncs += 1;
+        self.resynced = Some(Instant::now());
     }
 
     /// Stats for the window since the last snapshot, and starts a new window.
@@ -432,12 +477,14 @@ impl StatsWindow {
         if self.pictures > 0 {
             self.totals.latency = self.latency_sum / self.pictures;
             self.totals.decode_time = self.decode_sum / self.pictures;
+            self.totals.drift = self.lag_sum / self.pictures;
         }
         self.window_start = Instant::now();
         self.pictures = 0;
         self.bytes = 0;
         self.latency_sum = Duration::ZERO;
         self.decode_sum = Duration::ZERO;
+        self.lag_sum = Duration::ZERO;
         self.totals.clone()
     }
 }
@@ -470,6 +517,9 @@ struct Current {
 /// - hardware decoding is switched on or off ([`decode::generation`] changed): the old one
 ///   keeps decoding until the next key frame, then the new one takes over, so the picture
 ///   never stops.
+///
+/// Pictures too far behind live aren't published, and if that doesn't catch up, frames are
+/// dropped until the next key frame ([`LatencyCap`]).
 struct DecodeLoop<'a, F> {
     name: &'a str,
     events: mpsc::UnboundedSender<DecodeEvent>,
@@ -485,6 +535,7 @@ struct DecodeLoop<'a, F> {
     software_only: bool,
     lost: u32,
     pictures: Vec<Frame>,
+    catch_up: LatencyCap,
 }
 
 impl<'a, F> DecodeLoop<'a, F>
@@ -511,7 +562,13 @@ where
             software_only: false,
             lost: 0,
             pictures: Vec::new(),
+            catch_up: LatencyCap::new(None),
         }
+    }
+
+    fn with_latency_cap(mut self, cap: Option<Duration>) -> Self {
+        self.catch_up = LatencyCap::new(cap);
+        self
     }
 
     fn run(mut self, mut rx: mpsc::Receiver<DecodeMsg>) {
@@ -524,6 +581,7 @@ where
                     self.wait_for_key = true;
                     self.software_only = false;
                     self.lost = 0;
+                    self.catch_up.reset();
                 }
                 DecodeMsg::Frame(frame) => self.frame(&frame),
             }
@@ -595,13 +653,24 @@ where
             .unwrap_or(u32::MAX)
             .max(1);
         for picture in self.pictures.drain(..) {
+            let (lag, verdict) = self.catch_up.picture(picture.pts, Instant::now());
             let _ = self.events.send(DecodeEvent::Picture {
                 source: picture.source_size,
                 decoded: (picture.width(), picture.height()),
                 latency: picture.decode_latency(),
                 decode_time: took / count,
+                lag,
+                shown: verdict == Verdict::Show,
             });
-            self.bus.publish(picture);
+            match verdict {
+                Verdict::Show => self.bus.publish(picture),
+                Verdict::Skip => {}
+                Verdict::Resync if !self.wait_for_key => {
+                    self.wait_for_key = true;
+                    let _ = self.events.send(DecodeEvent::Resync);
+                }
+                Verdict::Resync => {}
+            }
         }
     }
 
@@ -713,7 +782,11 @@ mod tests {
             &self.name
         }
 
-        fn decode(&mut self, _: &EncodedFrame, out: &mut Vec<Frame>) -> Result<(), PipelineError> {
+        fn decode(
+            &mut self,
+            frame: &EncodedFrame,
+            out: &mut Vec<Frame>,
+        ) -> Result<(), PipelineError> {
             if self.lose_at == Some(self.decoded) {
                 return Err(PipelineError::new(ErrorKind::DecoderLost, "device removed"));
             }
@@ -722,7 +795,9 @@ mod tests {
                 // Like a hardware decoder that knows what it is after the first picture.
                 self.name.push_str(" (GPU)");
             }
-            out.push(Frame::black(4, 2));
+            let mut picture = Frame::black(4, 2);
+            picture.pts = frame.pts;
+            out.push(picture);
             Ok(())
         }
 
@@ -738,6 +813,17 @@ mod tests {
         frames: &[bool],
         lose: &[Option<usize>],
         between: impl Fn(usize),
+    ) -> (Vec<bool>, Vec<DecodeEvent>, Vec<Limit>) {
+        let frames: Vec<_> = frames.iter().map(|&k| (k, Duration::ZERO)).collect();
+        run_loop_with(&frames, lose, between, None)
+    }
+
+    /// [`run_loop`] with a presentation time per frame and a latency cap.
+    fn run_loop_with(
+        frames: &[(bool, Duration)],
+        lose: &[Option<usize>],
+        between: impl Fn(usize),
+        latency_cap: Option<Duration>,
     ) -> (Vec<bool>, Vec<DecodeEvent>, Vec<Limit>) {
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let created = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -760,15 +846,16 @@ mod tests {
                     limits: l.clone(),
                 }))
             },
-        );
+        )
+        .with_latency_cap(latency_cap);
         lp.session = Some((VideoCodec::H264, None));
-        for (i, &keyframe) in frames.iter().enumerate() {
+        for (i, &(keyframe, pts)) in frames.iter().enumerate() {
             between(i);
             lp.frame(&EncodedFrame {
                 codec: VideoCodec::H264,
                 data: Vec::new(),
                 keyframe,
-                pts: Duration::ZERO,
+                pts,
                 received: Instant::now(),
                 loss: 0,
             });
@@ -848,5 +935,48 @@ mod tests {
             5,
             "the old decoder keeps going until the key frame"
         );
+    }
+
+    #[test]
+    fn pictures_far_behind_live_are_skipped_then_resynced_at_a_key_frame() {
+        let ms = Duration::from_millis;
+        // Frames come in back to back, so a presentation time going backwards by 1 s looks
+        // like a picture 1 s late.
+        let frames = [
+            (true, ms(2000)),  // anchor
+            (false, ms(1000)), // 1 s behind: skipped
+            (false, ms(0)),    // 2 s behind, another cap's worth worse: resync
+            (false, ms(40)),   // dropped, waiting for a key frame
+            (true, ms(80)),    // new anchor
+            (false, ms(120)),
+        ];
+        let (_, events, _) = run_loop_with(&frames, &[None], |_| {}, Some(ms(350)));
+        let shown: Vec<bool> = events
+            .iter()
+            .filter_map(|e| match e {
+                DecodeEvent::Picture { shown, .. } => Some(*shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(shown, [true, false, false, true, true]);
+        let resyncs = events
+            .iter()
+            .filter(|e| matches!(e, DecodeEvent::Resync))
+            .count();
+        assert_eq!(resyncs, 1);
+    }
+
+    #[test]
+    fn skipped_pictures_count_as_alive_and_resyncs_wait_like_a_new_session() {
+        let mut w = StatsWindow::new(VideoCodec::H264);
+        w.picture((4, 2), (4, 2), Duration::ZERO, Duration::ZERO);
+        w.lag(Duration::from_millis(500), false);
+        w.resync();
+        let s = w.snapshot();
+        assert_eq!((s.frames_skipped, s.resyncs), (1, 1));
+        assert_eq!(s.drift, Duration::from_millis(500));
+        assert!(w.streamed() && w.resynced.is_some());
+        w.picture((4, 2), (4, 2), Duration::ZERO, Duration::ZERO);
+        assert!(w.resynced.is_none(), "a picture ends the wait");
     }
 }

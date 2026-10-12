@@ -519,15 +519,22 @@ impl App {
                 lines.push(st.activity.summary());
                 if let Activity::Running(StreamState::Streaming(stats)) = &st.activity {
                     lines.push(format!(
-                        "{} {}x{}, {:.1} fps, {:.1} Mbit/s, {} ms, {}",
+                        "{} {}x{}, {:.1} fps, {:.1} Mbit/s, {} ms, drift {} ms, {}",
                         stats.codec,
                         stats.width,
                         stats.height,
                         stats.fps,
                         stats.bitrate as f64 / 1e6,
                         stats.latency.as_millis(),
+                        stats.drift.as_millis(),
                         stats.decoder
                     ));
+                    if stats.frames_skipped > 0 {
+                        lines.push(format!(
+                            "Caught up with live: {} pictures skipped, {} key-frame resyncs",
+                            stats.frames_skipped, stats.resyncs
+                        ));
+                    }
                     lines.extend(frame_rate_note(stats.fps, s.output.fps));
                 }
                 if let Some(hint) = st.activity.hint() {

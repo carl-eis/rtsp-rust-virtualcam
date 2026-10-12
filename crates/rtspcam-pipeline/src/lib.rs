@@ -9,6 +9,7 @@
 //! - [`scale`]: NV12 scaling with the configured fit mode, and NV12 → BGRA, YUYV and I420.
 //! - [`error`]: errors classified by what the user can do about them.
 //! - [`status`]: stream state and statistics.
+//! - `latency`: how far a stream is behind live, and catching up.
 //! - [`transform`]: crop, rotate and flip.
 //! - [`pattern`]: an animated test pattern.
 
@@ -16,6 +17,7 @@ pub mod bus;
 pub mod decode;
 pub mod error;
 pub mod frame;
+mod latency;
 pub mod pattern;
 pub mod pipeline;
 pub mod scale;
