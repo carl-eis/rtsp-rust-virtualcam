@@ -23,4 +23,6 @@ mod source_sizes;
 pub mod status;
 
 pub use manager::{CameraManager, ManagerOptions, Preview, SOURCE_SIZES_FILE};
-pub use status::{Activity, CameraStatus, VcamState, frame_rate_note, output_summary};
+pub use status::{
+    Activity, CameraStatus, LatencyReport, VcamState, frame_rate_note, output_summary,
+};

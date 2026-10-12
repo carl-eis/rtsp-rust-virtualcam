@@ -25,6 +25,9 @@ Section numbers (§) refer to the headings inside each document.
   still uses `UnsupportedCameras`.
 - **Output formats:** 60 fps and a "Source" size (the camera's own) were added for issue #13
   ([18](18-progress-issue-13.md), 2026-10-10).
+- **Latency:** streams measure their drift behind live and catch up past a 350 ms cap; the DLL
+  reports `MEError` instead of losing a request token (issues #20, #21,
+  [19](19-progress-issues-20-21.md), 2026-10-12).
 
 ## 2. The documents
 
@@ -49,6 +52,7 @@ Section numbers (§) refer to the headings inside each document.
 | 16 | [16-progress-issue-12.md](16-progress-issue-12.md) | Progress | Issue #12 (15 §4.1–4.3, 4.5) | **Current** high-resolution frame pacing in the DLL, even timestamps, YUY2/I420 on Windows, sample pool and feed buffer reuse, frame-gap measurements; the STREAMON check (15 §4.4) still needs a person (issue #17) |
 | 17 | [17-realtimewebcam-comparison.md](17-realtimewebcam-comparison.md) | Review | RTSP Cam vs RealTimeWebCam (Windows virtual camera, latency) | **Current** latency cap with catch-up to live, opt-in persistent camera, lost request token in the DLL, delivery on frame arrival, suggested next steps |
 | 18 | [18-progress-issue-13.md](18-progress-issue-13.md) | Progress | Issue #13 (15 §5 "60 fps") | **Current** 60 fps output (36 media types), the "Source" resolution (`output.source`, `source-sizes.json`, re-create when no app uses the camera, pipe kept on Windows), 1080p60 CPU and frame-gap measurements |
+| 19 | [19-progress-issues-20-21.md](19-progress-issues-20-21.md) | Progress | Issues #20, #21 (17 §3.1, §3.3) | **Current** drift in `StreamStats`, latency cap (skip, then resync at a key frame), `MEError` when a sample can't be sent |
 
 ### Which documents are current
 
@@ -69,7 +73,8 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | "CPU per stage was never measured", "decoding is software today" (08.1 §1, 03 §4.2) | Measured and built: [14 §3](14-progress-phase-8.md#3-measurements) |
 | Low-hanging fixes 15 §4.1–4.3 and 4.5 (proposed) | Built: [16](16-progress-issue-12.md); 15 §4.4 still open |
 | Advertised formats "1080p/720p/480p at 30 and 15 fps", 24 media types (03, 15, 16) | 60 fps added and a "Source" size: 36 (or 48) types, [18 §1](18-progress-issue-13.md#1-what-was-done) |
-| Next free document number (04, 05, 06, 07, 13) | 19. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
+| Latency cap and lost request token, 17 §3.1 and §3.3 (proposed) | Built: [19](19-progress-issues-20-21.md) |
+| Next free document number (04, 05, 06, 07, 13) | 20. A Phase 0 decision record was never written; [06 §1](06-checkpoint-2026-10-09.md#1-phase-status) explains where each spike was covered. |
 
 ## 3. Reading order by task
 
@@ -137,6 +142,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | GPU path (D3D11 decode, early downscale): the plan, then what was built | [08.1](08.1-Plan-Phase-8.md), [14](14-progress-phase-8.md) |
 | Measuring CPU per stage (`rtspcam-cli bench`, `rtspcam_core::profile`) | [14 §1](14-progress-phase-8.md#80-measuring-rtspcam-core-rtspcam-platform-rtspcam-cli), [14 §3](14-progress-phase-8.md#3-measurements) |
 | Colour range, CPU scaling, MJPEG gaps | [03 §6](03-progress-phases-2-3.md#6-known-issues) |
+| Drift behind live, latency cap (skip, resync) | [19 §1](19-progress-issues-20-21.md#1-drift-and-the-latency-cap-issue-20) |
 
 ### Windows virtual camera (DLL and IPC)
 
@@ -150,6 +156,7 @@ Later documents correct earlier ones. When they disagree, the later one wins:
 | Never `Path::exists` on a pipe | [05 §2](05-progress-phases-4-5.md#changes-outside-the-app-crate) |
 | Frame pacing (high-resolution timer), sample timestamps, offered formats, sample pool | [16 §1](16-progress-issue-12.md#1-what-was-done), measurements in [16 §2](16-progress-issue-12.md#2-measurements) |
 | 60 fps, the "Source" size and when a camera is re-created for it | [18 §1](18-progress-issue-13.md#1-what-was-done), measurements in [18 §2](18-progress-issue-13.md#2-measurements) |
+| A sample that can't be sent: retry, then `MEError` | [19 §2](19-progress-issues-20-21.md#2-meerror-instead-of-a-lost-request-token-issue-21) |
 
 ### Camera manager and UI
 

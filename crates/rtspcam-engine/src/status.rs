@@ -1,8 +1,11 @@
 //! What the UI shows for each camera.
 
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 use rtspcam_core::OutputFormat;
 use rtspcam_ipc::StreamStatus;
-use rtspcam_pipeline::{ErrorKind, StreamState};
+use rtspcam_pipeline::{DEFAULT_LATENCY_CAP, ErrorKind, StreamState, StreamStats};
 use uuid::Uuid;
 
 /// What a camera's pipeline is doing.
@@ -140,6 +143,122 @@ pub fn frame_rate_note(camera_fps: f32, output_fps: u32) -> Option<String> {
     })
 }
 
+/// A few lines on one stream's latency for the stream details, with the trend of its drift
+/// behind live. It is rebuilt at most every [`LatencyReport::EVERY`], so the figures stay
+/// readable, and it only uses the stats the pipeline already reports once a second.
+#[derive(Debug, Default)]
+pub struct LatencyReport {
+    stream: Option<Uuid>,
+    /// Drift samples over the last [`Self::SPAN`].
+    drift: VecDeque<(Instant, Duration)>,
+    built: Option<Instant>,
+    lines: Vec<String>,
+}
+
+impl LatencyReport {
+    /// How often the report changes.
+    pub const EVERY: Duration = Duration::from_secs(2);
+    /// How far back the trend looks.
+    const SPAN: Duration = Duration::from_secs(30);
+    /// Enough history to call a trend.
+    const TREND_AFTER: Duration = Duration::from_secs(10);
+    /// A change in drift smaller than this is "steady".
+    const TREND_STEP: Duration = Duration::from_millis(50);
+
+    /// The report for `stream`, given its stats (`None` when it isn't streaming) at `now`.
+    pub fn update(&mut self, stream: Uuid, stats: Option<&StreamStats>, now: Instant) -> &[String] {
+        let Some(stats) = stats else {
+            *self = Self::default();
+            return &self.lines;
+        };
+        if self.stream != Some(stream) {
+            *self = Self {
+                stream: Some(stream),
+                ..Self::default()
+            };
+        }
+        if self
+            .built
+            .is_some_and(|t| now.saturating_duration_since(t) < Self::EVERY)
+        {
+            return &self.lines;
+        }
+        self.built = Some(now);
+        self.drift.push_back((now, stats.drift));
+        while self
+            .drift
+            .front()
+            .is_some_and(|(t, _)| now.saturating_duration_since(*t) > Self::SPAN)
+        {
+            self.drift.pop_front();
+        }
+        self.lines = self.build(stats, now);
+        &self.lines
+    }
+
+    fn build(&self, stats: &StreamStats, now: Instant) -> Vec<String> {
+        let ms = |d: Duration| d.as_millis();
+        let (min, max) = self
+            .drift
+            .iter()
+            .fold((Duration::MAX, Duration::ZERO), |(lo, hi), &(_, d)| {
+                (lo.min(d), hi.max(d))
+            });
+        let span = self
+            .drift
+            .front()
+            .map_or(Duration::ZERO, |(t, _)| now.saturating_duration_since(*t));
+        vec![
+            "Latency".to_owned(),
+            format!(
+                "Arrival to picture: {} ms (decoder {:.1} ms)",
+                ms(stats.latency),
+                stats.decode_time.as_secs_f64() * 1000.0
+            ),
+            format!(
+                "Behind live: {} ms, {} ({}-{} ms in {} s)",
+                ms(stats.drift),
+                self.trend(span),
+                ms(min),
+                ms(max),
+                span.as_secs().max(1)
+            ),
+            format!(
+                "Catch-up past {} ms: {} skipped, {} resyncs",
+                ms(DEFAULT_LATENCY_CAP),
+                stats.frames_skipped,
+                stats.resyncs
+            ),
+        ]
+    }
+
+    /// "rising", "falling" or "steady", comparing the oldest and newest third of the samples.
+    fn trend(&self, span: Duration) -> &'static str {
+        if span < Self::TREND_AFTER {
+            return "measuring";
+        }
+        let n = self.drift.len();
+        let third = (n / 3).max(1);
+        let average = |skip: usize| {
+            self.drift
+                .iter()
+                .skip(skip)
+                .take(third)
+                .map(|(_, d)| *d)
+                .sum::<Duration>()
+                / u32::try_from(third).unwrap_or(u32::MAX)
+        };
+        let (old, new) = (average(0), average(n - third));
+        if new > old + Self::TREND_STEP {
+            "rising"
+        } else if old > new + Self::TREND_STEP {
+            "falling"
+        } else {
+            "steady"
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +289,88 @@ mod tests {
         assert_eq!(frame_rate_note(30.0, 15), None);
         // Nothing measured yet.
         assert_eq!(frame_rate_note(0.0, 60), None);
+    }
+
+    fn stats(drift_ms: u64) -> StreamStats {
+        StreamStats {
+            codec: rtspcam_pipeline::VideoCodec::H264,
+            decoder: String::new(),
+            width: 1280,
+            height: 720,
+            decoded_size: (1280, 720),
+            fps: 30.0,
+            bitrate: 0,
+            latency: Duration::from_millis(12),
+            decode_time: Duration::from_micros(3100),
+            drift: Duration::from_millis(drift_ms),
+            frames_decoded: 0,
+            decode_errors: 0,
+            packets_lost: 0,
+            frames_skipped: 2,
+            resyncs: 0,
+        }
+    }
+
+    /// Feeds one drift value every [`LatencyReport::EVERY`] and returns the last report.
+    fn run(report: &mut LatencyReport, id: Uuid, start: Instant, drifts: &[u64]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (i, &d) in drifts.iter().enumerate() {
+            let now = start + LatencyReport::EVERY * i as u32;
+            lines = report.update(id, Some(&stats(d)), now).to_vec();
+        }
+        lines
+    }
+
+    #[test]
+    fn latency_report_lines() {
+        let mut report = LatencyReport::default();
+        let lines = run(&mut report, Uuid::new_v4(), Instant::now(), &[40]);
+        assert_eq!(
+            lines,
+            [
+                "Latency",
+                "Arrival to picture: 12 ms (decoder 3.1 ms)",
+                "Behind live: 40 ms, measuring (40-40 ms in 1 s)",
+                "Catch-up past 350 ms: 2 skipped, 0 resyncs",
+            ]
+        );
+    }
+
+    #[test]
+    fn latency_report_changes_at_most_every_two_seconds() {
+        let mut report = LatencyReport::default();
+        let id = Uuid::new_v4();
+        let start = Instant::now();
+        let first = report.update(id, Some(&stats(40)), start).to_vec();
+        let soon = report
+            .update(id, Some(&stats(90)), start + Duration::from_secs(1))
+            .to_vec();
+        assert_eq!(first, soon);
+        let later = report
+            .update(id, Some(&stats(90)), start + LatencyReport::EVERY)
+            .to_vec();
+        assert!(later[2].contains("90 ms"), "{later:?}");
+    }
+
+    #[test]
+    fn latency_report_trend() {
+        let id = Uuid::new_v4();
+        let start = Instant::now();
+        let rising: Vec<u64> = (0..10).map(|i| i * 40).collect();
+        let lines = run(&mut LatencyReport::default(), id, start, &rising);
+        assert!(lines[2].contains("rising"), "{lines:?}");
+        let lines = run(&mut LatencyReport::default(), id, start, &[40; 10]);
+        assert!(lines[2].contains("steady"), "{lines:?}");
+    }
+
+    #[test]
+    fn latency_report_starts_over_for_another_stream_or_when_not_streaming() {
+        let mut report = LatencyReport::default();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let start = Instant::now();
+        run(&mut report, a, start, &[300; 10]);
+        let lines = report.update(b, Some(&stats(10)), start + Duration::from_secs(30));
+        assert!(lines[2].contains("measuring (10-10 ms"), "{lines:?}");
+        assert!(report.update(b, None, start).is_empty());
     }
 }
