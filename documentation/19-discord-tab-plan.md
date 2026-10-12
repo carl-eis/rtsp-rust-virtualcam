@@ -7,7 +7,9 @@ Status: plan (2026-10-12), nothing built. Branch `feat/audio-tab`. Refer to this
 The idea comes from [Discord Audio Stream Bot](https://github.com/BinkanSalaryman/Discord-Audio-Stream-Bot)
 (Java, JDA 6.1, BASS, Swing; last commit 2025-11-10): a bot that sends a recording device's
 sound into a Discord voice channel and can play the channel back. This plan builds the same
-features in Rust, in a new tab in RTSP Cam's window.
+features in Rust, in a new tab in RTSP Cam's window. A second project,
+[TheEpicAudioStreamer](https://github.com/dandln/TheEpicAudioStreamer) (TEAS), is the reference
+for the voice connection and DAVE (§1).
 
 Facts marked *check* are from documentation or memory and must be confirmed in D0 or in the
 phase that relies on them.
@@ -29,7 +31,14 @@ phase that relies on them.
 Out of scope: user accounts ("selfbots", against Discord's terms; it has to be a bot account),
 video or Go Live, music playback from files, and moderation features.
 
-### Using the Java bot as a reference
+### References
+
+| Project | What we take from it | What we don't |
+|---|---|---|
+| **Discord Audio Stream Bot** (Java, main reference) | Features, the audio path from **any audio device**, audio format and timing, lag handling, settings model, follow-a-user. | Its voice connection: it never added DAVE, so it can no longer join voice channels (its open issue "E2E required at join vc", 2026-04; a DAVE pull request was closed without merging). |
+| **TheEpicAudioStreamer** (C#, MIT, last change 2026-09) | How to connect to voice now that DAVE is required (§1, "What TEAS shows about DAVE"), and recording an output device as an optional source. | Its scope: one server, Windows only, console app, no gate, mute, lag limit or receive. |
+
+### Using the Java bot as the main reference
 
 The Java bot's source is public, and we use its logic freely: its audio format, frame timing,
 lag handling, settings model and feature set are the starting point for this plan, and its
@@ -63,6 +72,35 @@ What is worth keeping from it:
   between channels (fixed there by reopening the stream), and reading the global config from
   the audio callback. In Rust, the capture owns its state and settings reach it through a
   channel, so the callback never takes a lock it can wait on.
+
+### What TEAS shows about DAVE
+
+TEAS (DSharpPlus 5.0 nightly, NAudio, .NET 10) is about 1,500 lines and does less than the
+Java bot, but its voice connection works with Discord as it is today. What it shows:
+
+- **DAVE lives entirely in the voice library.** TEAS has no encryption code of its own: it
+  moved from `DSharpPlus.VoiceNext` to the rewritten `DSharpPlus.Voice`, which ships the DAVE
+  part as a native library ("Koana", with Opus, Sodium and Speex). The bot just writes
+  48 kHz stereo 16-bit PCM to an audio writer. We do the same with songbird 0.6: no MLS or
+  frame encryption in our crates, and only `rtspcam-discord` knows songbird exists.
+- **The voice library is the part that breaks.** Discord enforced DAVE on 2026-03-01; TEAS's
+  0.7.1 (2026-09-12) changelog says the library update "makes the bot play sound again". The
+  Java bot never got the update and still can't join. So: pin songbird, keep it easy to bump
+  (one crate), and make a refused voice connection show its close code (4017 means DAVE) in
+  the tab, so the user knows it's not their setup (D2).
+- **Signal silence on stop.** When streaming stops TEAS calls `SignalSilence()` instead of
+  just stopping the writes, so listeners don't hear the last frame repeated (Opus fills
+  gaps). We need the same when muting or stopping; *check* whether songbird sends the
+  silence frames itself (D2).
+- **The format goes straight in.** TEAS asks WASAPI for 48 kHz/16-bit/stereo with a 100 ms
+  buffer and passes it through unchanged. Same contract as the Java bot; our `f32` path
+  converts once at the capture side (D1).
+- **Private bot setup** in its README: in the Developer Portal, untick "Public Bot" and "User
+  Install" so nobody else can add the bot. Goes into our manual page (D4).
+- **Output devices as a source.** TEAS records an *output* device in WASAPI loopback mode
+  (what the PC plays), so a game or music player can be streamed without VB-Cable. We add this
+  as an **optional** source next to the normal input devices (D1); the main path stays "any
+  audio input device", as in the Java bot.
 
 ## 2. What the Java bot does, and what we change
 
@@ -103,9 +141,9 @@ rtspcam-app (Slint UI, Discord tab)
 
 | Need | Choice | Why / notes |
 |---|---|---|
-| Voice, DAVE | `songbird` 0.6 | Since 2026-03-01 Discord refuses voice connections without DAVE (close code 4017). Songbird 0.6.0 (2026-04-05) supports DAVE and dropped the old `xsalsa20` modes. MSRV 1.83 (ours is 1.92). Uses `opus2` instead of `audiopus`. |
+| Voice, DAVE | `songbird` 0.6 | Since 2026-03-01 Discord refuses voice connections without DAVE (close code 4017). Songbird 0.6.0 (2026-04-05) supports DAVE and dropped the old `xsalsa20` modes; it plays the part `DSharpPlus.Voice` plays in TEAS. MSRV 1.83 (ours is 1.92). Uses `opus2` instead of `audiopus`. |
 | Gateway, REST | `serenity` 0.12, default features off, only `gateway`, `cache`, `voice`, `rustls_backend` | No command framework needed. Alternative: `twilight` 0.17 (lighter, but we would write the guild/channel cache ourselves). *check* which serenity version songbird 0.6 pairs with. |
-| Audio devices | `cpal` | Portable; WASAPI loopback (record what an output device plays) by opening an output device as input (*check* the cpal version). On Linux, PipeWire/PulseAudio "Monitor of ..." sources already show up as inputs through ALSA (*check*). |
+| Audio devices | `cpal` | Portable; any input device is the main source. Optional WASAPI loopback (record what an output device plays, as TEAS does) by opening an output device as input (*check* the cpal version). On Linux, PipeWire/PulseAudio "Monitor of ..." sources already show up as inputs through ALSA (*check*). |
 | Resampling | `rubato`, only when the device is not 48 kHz | Most WASAPI devices default to 48 kHz; 44.1 kHz devices are common enough that we need it. |
 | Ring buffer | `ringbuf` or our own `Mutex<VecDeque>` | The cpal callback must not block for long; measure before choosing. |
 
@@ -123,8 +161,9 @@ A `examples/discord_spike.rs` in a scratch crate:
 3. Feed songbird live PCM: find how to wrap a ring buffer as an `Input` (`RawAdapter` over a
    `Read` of `f32` *check*). On an underrun the reader must return **silence, not 0 bytes**,
    or songbird treats it as the end of the track (*check*).
-4. Try WASAPI loopback (record the default output device). If it works, VB-Cable is no
-   longer needed on Windows.
+4. Try WASAPI loopback (record the default output device, as TEAS does). If it works, it
+   becomes the optional "output device" source in D1; if cpal can't do it, note what a
+   `rtspcam-platform` function would need, and D1 ships without it.
 5. Receive: enable songbird's `receive` feature, log `VoiceTick` speakers for 30 s. Confirm
    decoded audio arrives with DAVE on (*check*).
 6. Measure what it costs: new crates in `Cargo.lock`, clean release build time, binary size
@@ -140,16 +179,21 @@ feature `discord` (on by default in release, off in CI's quick jobs).
 ### D1. `rtspcam-audio` crate
 
 1. `devices()`: inputs and outputs with a stable id (cpal name; *check* uniqueness when two
-   devices share a name) and a "default" entry that follows the OS default.
+   devices share a name) and a "default" entry that follows the OS default. Input devices are
+   the main source (microphone, VB-Cable, line in), as in the Java bot.
 2. `Capture`: opens an input device, converts to 48 kHz stereo `f32` (mono → both channels,
    more than two → first two, resample if needed), writes 20 ms blocks into a bounded buffer.
    Lag above a limit (200 ms, like the Java bot) drops the oldest blocks and counts them.
 3. `Gate`: threshold in dBFS (default −50), 200 ms hold, 5 ms fade in/out, per 20 ms block.
    `Meter`: peak and RMS per block, for the UI.
-4. `Playback` (used by D5): pulls 20 ms blocks from a buffer, silence on underrun.
-5. Device loss (unplugged headset): the stream's error callback ends the capture and reports
+4. Optional source, **output device (loopback)**: records what an output device plays, as
+   TEAS does on Windows, if D0 step 4 worked. Same `Capture` interface, listed separately in
+   the picker ("Speakers (what the PC plays)"). On Linux the PipeWire/PulseAudio monitor
+   sources already appear as inputs, so nothing extra is needed there.
+5. `Playback` (used by D5): pulls 20 ms blocks from a buffer, silence on underrun.
+6. Device loss (unplugged headset): the stream's error callback ends the capture and reports
    it; the caller reopens when the device comes back (poll `devices()` every few seconds).
-6. Tests without hardware: a fake source feeding the converter, gate, meter and buffer
+7. Tests without hardware: a fake source feeding the converter, gate, meter and buffer
    (format conversion, resample length, gate open/close timing, lag drop).
 
 ### D2. `rtspcam-discord` crate
@@ -161,17 +205,22 @@ feature `discord` (on by default in release, off in CI's quick jobs).
    server's voice and stage channels from the cache, updated on channel events.
 3. Errors map to plain hints like the pipeline's `ErrorKind`: bad token ("The token was
    refused. Copy it again from the Developer Portal."), missing Connect/Speak permission,
-   channel full, 4017 (would mean a songbird regression), network down.
+   channel full, network down, and 4017: "Discord refused the voice connection because the
+   encryption (DAVE) is out of date. RTSP Cam needs an update." with the close code, since the
+   voice library is the part that breaks when Discord changes (§1, TEAS).
 4. Reconnect: serenity handles the gateway; on a voice disconnect that we didn't ask for,
    rejoin with backoff (1, 2, 5, 10, 30 s), the same shape as the pipeline's backoff.
 5. Audio path: `Capture` → `Gate` → (muted? silence) → songbird input. Changing the device
    while in a channel swaps the capture without leaving.
-6. Invite link: `https://discord.com/oauth2/authorize?client_id=<app id>&scope=bot&permissions=3146752`
+6. Stopping and muting end with a few frames of silence so Discord's Opus decoder doesn't
+   repeat the last sound (TEAS's `SignalSilence()`); *check* whether songbird does this when a
+   track pauses or ends, and add it if not.
+7. Invite link: `https://discord.com/oauth2/authorize?client_id=<app id>&scope=bot&permissions=3146752`
    (View Channel 1024 + Connect 1048576 + Speak 2097152), app id from the REST "current
    application" call after login.
-7. The token never reaches a log line: it is a `Secret` until it is handed to serenity, and
+8. The token never reaches a log line: it is a `Secret` until it is handed to serenity, and
    serenity's own logging is checked for it (*check*; filter its target at `warn` if needed).
-8. Tests: status transitions and error mapping with a fake gateway trait; no network in CI.
+9. Tests: status transitions and error mapping with a fake gateway trait; no network in CI.
 
 ### D3. Config
 
@@ -209,17 +258,20 @@ feature `discord` (on by default in release, off in CI's quick jobs).
      "Log in when RTSP Cam starts" checkbox, a link to the setup steps in the manual.
    - **Voice**: server and channel pickers (only voice and stage channels the bot can see),
      "Join"/"Leave".
-   - **Sound**: input device picker (with a "Refresh" button), level meter with the gate
-     threshold drawn on it, gate checkbox and threshold slider, a big **Mute** toggle.
+   - **Sound**: device picker (input devices first, then the optional output devices from
+     D1, with a "Refresh" button), level meter with the gate threshold drawn on it, gate
+     checkbox and threshold slider, a big **Mute** toggle.
 3. New `src/ui/discord_tab.rs` following the pattern of the dialogs: it reads `BotStatus` and
    pushes it to the properties with `invoke_from_event_loop`; the meter updates at most 20
    times a second.
 4. Tray menu: "Discord: Mute"/"Unmute" while in a channel.
 5. Screenshot in `screenshots/` and a manual page `documentation/manual/discord.md` with the
-   bot setup (create the application, add a bot, copy the token, invite it).
+   bot setup (create the application, add a bot, copy the token, invite it). Include TEAS's
+   advice to make the bot private: untick "Public Bot" (Bot page) and "User Install"
+   (Installation page) so nobody else can add it.
 
-**D0–D4 is the first release.** It is useful on its own: stream a microphone, VB-Cable or
-(if D0 step 4 works) the PC's own sound into a channel.
+**D0–D4 is the first release.** It is useful on its own: stream a microphone, VB-Cable or any
+other input device into a channel, and (if D0 step 4 works) the PC's own sound.
 
 ### D5. Hearing the channel (receive)
 
@@ -280,7 +332,7 @@ a separate plan before starting; this plan only keeps `rtspcam-audio`'s input si
 | Risk | Effect | What we do |
 |---|---|---|
 | Songbird's DAVE code is six months old | Voice drops or fails on some server setups | D0 tests with real listeners on two OSes; pin the songbird version; status shows the close code so reports are useful. |
-| Discord changes the voice protocol again | The tab stops working until songbird updates | Keep songbird easy to bump (one crate uses it); the camera features are unaffected. |
+| Discord changes the voice protocol again | The tab stops working until songbird updates. It has happened: the Java bot still can't join after the DAVE switch, and TEAS had no sound until its library rewrite (0.7.1, 2026-09-12). | Keep songbird easy to bump (one crate uses it); the 4017 hint tells the user it needs an app update; the camera features are unaffected. |
 | Build cost (serenity, songbird, opus2) | Slower CI and builds, bigger binary | Measured in D0; fallback is the `discord` cargo feature. |
 | The bot token is a full credential | A leaked token lets anyone control the bot | `Secret` sealed by the OS store, redacted `Debug`, never logged, left out of export. |
 | Broadcasting by accident | The user's room goes into a channel | Starts muted, mute in the tray, the meter shows what is being sent. |
@@ -290,8 +342,11 @@ a separate plan before starting; this plan only keeps `rtspcam-audio`'s input si
 ## 7. Deferred or dropped
 
 - **Slash commands** (`/join`, `/leave`, `/bind`, `/activity`, `/status`, `/about`, ...): the
-  Java bot needs them because its window can't pick channels. Ours can. If added later, they
-  bring back the SERVER MEMBERS intent for permission checks.
+  Java bot needs them because its window can't pick channels. Ours can. If added later:
+  register them per server, not globally (they appear at once; TEAS also clears old global
+  ones at startup), and use TEAS's permission model, which needs no privileged intent: the
+  application owner, anyone with Manage Server, and listed users and roles. Store users and
+  roles by **id**, not by name as TEAS does, since names change.
 - **Several channels at once** (the Java bot can be in one channel per server and share one
   recording): possible with songbird, but the tab is designed for one channel; revisit after
   D4.

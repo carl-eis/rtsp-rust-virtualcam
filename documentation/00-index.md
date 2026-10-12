@@ -49,7 +49,7 @@ Section numbers (§) refer to the headings inside each document.
 | 16 | [16-progress-issue-12.md](16-progress-issue-12.md) | Progress | Issue #12 (15 §4.1–4.3, 4.5) | **Current** high-resolution frame pacing in the DLL, even timestamps, YUY2/I420 on Windows, sample pool and feed buffer reuse, frame-gap measurements; the STREAMON check (15 §4.4) still needs a person (issue #17) |
 | 17 | [17-realtimewebcam-comparison.md](17-realtimewebcam-comparison.md) | Review | RTSP Cam vs RealTimeWebCam (Windows virtual camera, latency) | **Current** latency cap with catch-up to live, opt-in persistent camera, lost request token in the DLL, delivery on frame arrival, suggested next steps |
 | 18 | [18-progress-issue-13.md](18-progress-issue-13.md) | Progress | Issue #13 (15 §5 "60 fps") | **Current** 60 fps output (36 media types), the "Source" resolution (`output.source`, `source-sizes.json`, re-create when no app uses the camera, pipe kept on Windows), 1080p60 CPU and frame-gap measurements |
-| 19 | [19-discord-tab-plan.md](19-discord-tab-plan.md) | Plan | **"Discord Tab"**: a Discord voice bot in a new tab (port of Discord Audio Stream Bot), phases D0–D8 | **Next work** on `feat/audio-tab`: songbird (DAVE) + serenity, `rtspcam-audio` and `rtspcam-discord` crates, the tab, receive, auto-join/follow, camera audio as a source |
+| 19 | [19-discord-tab-plan.md](19-discord-tab-plan.md) | Plan | **"Discord Tab"**: a Discord voice bot in a new tab (features from Discord Audio Stream Bot, DAVE approach from TheEpicAudioStreamer), phases D0–D8 | **Next work** on `feat/audio-tab`: songbird (DAVE) + serenity, `rtspcam-audio` and `rtspcam-discord` crates, the tab, receive, auto-join/follow, camera audio as a source |
 
 ### Which documents are current
 
