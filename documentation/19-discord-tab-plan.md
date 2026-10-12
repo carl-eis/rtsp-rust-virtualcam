@@ -18,7 +18,7 @@ phase that relies on them.
 
 1. A **Discord** tab where the user pastes a bot token, logs in, picks a server and a voice
    channel, picks an input device, and the bot sends that sound into the channel.
-2. Mute, a noise gate and a level meter in the tab. Settings are saved in `config.json`; the
+2. Mute, a noise gate and a level meter in the tab. Settings are saved in `discord.json`; the
    token is a `Secret` like stream passwords.
 3. Later phases: hearing the channel (receive), auto-join, following a user, and a camera's
    own audio as the source.
@@ -113,7 +113,7 @@ Java bot, but its voice connection works with Discord as it is today. What it sh
 | Auto-join, follow a user | `/autojoin`, `/follow-audio`, per server. | Settings in the tab (D6). |
 | Command channel binding, `/activity`, `/status`, `/stage` | Slash commands. | Deferred or dropped (§7). |
 | Invite | Maintenance tab builds an invite link and lists servers to leave. | "Invite to a server" button (D4) and a server list with "Leave" (D6). |
-| Token, settings | Gson file next to the jar, token in plain text. | `config.json` `discord` object, token sealed with `SecretStore` (D3). |
+| Token, settings | Gson file next to the jar, token in plain text. | Its own `discord.json`, token sealed with `SecretStore` (D3). |
 | Privileged intents | Needs SERVER MEMBERS (to check command permissions). | None, as long as there are no slash commands (*check* in D0). |
 
 ## 3. How it fits the code
@@ -122,20 +122,58 @@ Java bot, but its voice connection works with Discord as it is today. What it sh
 rtspcam-app (Slint UI, Discord tab)
    ├── rtspcam-discord   NEW  serenity gateway + songbird voice (DAVE), bot state machine
    │      └── rtspcam-audio  NEW  cpal devices, capture/playback, resample, gate, meter, ring buffer
-   └── rtspcam-core           `discord` settings, token as `Secret`
+   └── rtspcam-core           `discord.json` settings, token as `Secret`
 ```
 
 - **`rtspcam-audio`** has no Discord code, so D7 (camera audio) and tests can use it alone.
   `cpal` hides the OS (WASAPI, ALSA, CoreAudio), so no OS `cfg` is needed. If one turns out
   to be needed (for example WASAPI loopback), it goes in `rtspcam-platform` behind a small
   function, as 09 requires.
-- **`rtspcam-discord`** runs on the app's existing tokio runtime (`manager.handle()`); it does
-  not start its own. It exposes a `DiscordBot` handle with commands (`login`, `logout`,
-  `join`, `leave`, `set_input`, `set_muted`, ...) and a `watch` channel of `BotStatus` that
-  the UI reads, the same pattern as `CameraManager` and its status.
+- **`rtspcam-discord`** runs on **its own tokio runtime** (a small multi-thread runtime with
+  its own named threads), not on the camera manager's (`manager.handle()`). It exposes a
+  `DiscordBot` handle with commands (`login`, `logout`, `join`, `leave`, `set_input`,
+  `set_muted`, ...) and a `watch` channel of `BotStatus` that the UI reads, the same pattern
+  as `CameraManager` and its status.
 - The bot is **separate from `CameraManager`**: it doesn't reconcile streams, and a fault in
   one doesn't stop the other. Shutdown order in `main`: bot first (leave the channel, close
   the gateway, with a short limit), then the camera manager.
+
+### Keeping the cameras safe
+
+Everything is in one app (one process, one binary). That keeps the app simple, and it is
+safe because the Discord code does nothing until it is used: code that is linked in but never
+runs cannot crash or slow the cameras (Rust has no hidden start-up code, so a linked songbird
+or Opus just sits there). The rules below keep it that way.
+
+1. **Nothing starts until it's used.** No runtime, no gateway connection, no audio device and
+   no threads until the user clicks "Log in" or `auto_login` is on. A user who never opens the
+   tab runs exactly the camera app they run today.
+2. **Its own tokio runtime.** Created on first use, dropped on log out. A blocked or busy
+   Discord task can't take a worker thread the camera pipelines need, and the camera
+   manager's runtime never runs Discord code.
+3. **Audio devices are never touched from the UI thread.** Listing, opening and closing
+   devices all happen on the Discord runtime (the device picker asks the bot and waits for an
+   answer). cpal sets up COM in multi-threaded mode on the threads it runs on, which clashes
+   with the single-threaded mode the window library (winit) needs on the UI thread (*check*
+   in D0).
+4. **Its own settings file.** `discord.json` next to `config.json`, read and written through
+   the same `ConfigStore` code (atomic save, `.bak`, watcher). A broken Discord setting can't
+   stop the streams from loading, `config.json`'s schema and version don't change, and
+   stream import/export can't pick up the token.
+5. **A message-shaped interface.** The UI and `main` only use `DiscordBot`'s commands and the
+   `BotStatus` channel, never songbird or serenity types, and the commands carry plain data.
+   If crashes ever show up, moving the bot into a helper process (§7) means putting a pipe
+   between the handle and the runtime, without a redesign.
+6. **Optional: a `discord` cargo feature** on `rtspcam-app`, on by default. Without it the
+   app builds with no tab and no Discord dependencies: a camera-only build, and a quick way to
+   tell whether a camera problem has anything to do with this work.
+
+What stays shared, and how it is handled:
+
+| Shared | Risk | Handling |
+|---|---|---|
+| `Cargo.lock` (one per workspace) | Adding songbird and serenity upgrades crates the camera code uses too (tokio, rustls, `windows`), for every user. | Read the `Cargo.lock` diff when the dependencies go in (D0 step 6); hold shared crates at their current versions where possible; run the full camera test suite and a manual camera check in the same pull request. |
+| The process | A native crash (Opus, an audio driver) ends the app, and on Windows the virtual cameras with it. Only possible while the bot is in use. | Accepted: Opus and WASAPI are mature, and the newest code (songbird's DAVE) is Rust, so a bug there is a panic or a dropped call rather than a crash. Panics unwind (no `panic = "abort"`), are logged by the existing panic hook, and end only the Discord task. The fallback if this turns out wrong is the helper process (§7). |
 
 ### Library choices (confirm in D0)
 
@@ -168,9 +206,14 @@ A `examples/discord_spike.rs` in a scratch crate:
    decoded audio arrives with DAVE on (*check*).
 6. Measure what it costs: new crates in `Cargo.lock`, clean release build time, binary size
    of `rtspcam.exe` before and after, and the native build needs of `opus2` (CMake? a C
-   compiler is already required) on all three CI runners.
+   compiler is already required) on all three CI runners. Read the `Cargo.lock` diff of adding
+   songbird and serenity and list every crate the camera code also uses whose version
+   changed (§3, "Keeping the cameras safe").
 7. Confirm the bot needs no privileged intent for listing servers and voice channels
    (`GUILDS`, `GUILD_VOICE_STATES`).
+8. With the Slint window open, list and open audio devices from a non-UI thread and confirm
+   there is no COM error on either side (§3 rule 3). Try it once from the UI thread too, to
+   know whether the rule is a hard requirement or just good practice.
 
 Exit: a short "D0 results" section at the top of the D1 progress document with the answers,
 and a go/no-go. If the build cost is too high, the fallback is putting the bot behind a cargo
@@ -198,8 +241,10 @@ feature `discord` (on by default in release, off in CI's quick jobs).
 
 ### D2. `rtspcam-discord` crate
 
-1. `DiscordBot::start(handle, settings)` and the command methods from §3. Internally one task
-   owns the serenity `Client` and the songbird `Songbird` manager.
+1. `DiscordBot::new(settings)` creates only the handle; the first `login` builds the runtime
+   (§3 rules 1–2), and `logout` shuts it down with a time limit. One task owns the serenity
+   `Client` and the songbird `Songbird` manager. `devices()` is a command too, answered on
+   the runtime (rule 3).
 2. `BotStatus` (in a `watch`): `Off`, `LoggingIn`, `Online { user, servers }`, `InVoice
    { server, channel, speaking, lag_ms }`, `Failed { reason, hint }`. `servers` holds each
    server's voice and stage channels from the cache, updated on channel events.
@@ -224,12 +269,13 @@ feature `discord` (on by default in release, off in CI's quick jobs).
 
 ### D3. Config
 
-1. A new optional top-level object in `config.json`, all fields with defaults so old files load
-   unchanged (additive, so no migration and no version bump; *check* against the rules in
-   [02 §3](02-progress.md#3-what-exists-crate-by-crate)):
+1. A separate file, `discord.json`, next to `config.json` (§3 rule 4), with its own `version`
+   and the same atomic save, `.bak` and watcher code. A missing file means defaults; an invalid
+   one shows an error in the tab and leaves the cameras alone:
 
    ```json
-   "discord": {
+   {
+     "version": 1,
      "token": "<sealed secret>",
      "auto_login": false,
      "input_device": "default",
@@ -242,10 +288,10 @@ feature `discord` (on by default in release, off in CI's quick jobs).
 
 2. `muted` starts `true`, so a new bot never broadcasts before the user means it to (the Java
    bot does the same).
-3. Validation in `validate.rs` (threshold range, ids are numbers). Import/export of streams
-   leaves the `discord` object out: it holds a token.
+3. Validation (threshold range, ids are numbers) in the same style as `validate.rs`. Stream
+   import/export never sees the file, so it can't carry the token.
 4. Headless mode (`--headless`): starts the bot when `auto_login` is on, so a server can run
-   it without a window. Hand edits to `discord` apply live through the existing watcher.
+   it without a window. Hand edits to `discord.json` apply live through a second watcher.
 
 ### D4. The tab (UI)
 
@@ -263,7 +309,8 @@ feature `discord` (on by default in release, off in CI's quick jobs).
      checkbox and threshold slider, a big **Mute** toggle.
 3. New `src/ui/discord_tab.rs` following the pattern of the dialogs: it reads `BotStatus` and
    pushes it to the properties with `invoke_from_event_loop`; the meter updates at most 20
-   times a second.
+   times a second. Opening the tab starts nothing; the device list is filled on "Log in" or
+   "Refresh", by asking the bot (§3 rules 1 and 3).
 4. Tray menu: "Discord: Mute"/"Unmute" while in a channel.
 5. Screenshot in `screenshots/` and a manual page `documentation/manual/discord.md` with the
    bot setup (create the application, add a bot, copy the token, invite it). Include TEAS's
@@ -337,6 +384,7 @@ a separate plan before starting; this plan only keeps `rtspcam-audio`'s input si
 | The bot token is a full credential | A leaked token lets anyone control the bot | `Secret` sealed by the OS store, redacted `Debug`, never logged, left out of export. |
 | Broadcasting by accident | The user's room goes into a channel | Starts muted, mute in the tray, the meter shows what is being sent. |
 | Audio device differences (sample rates, PipeWire through ALSA, unplugging) | Glitches or silence | Resample in D1, reopen on device loss, lag limit with a counter in the status. |
+| Discord code affects the cameras | Cameras stop or stutter while the bot runs; or, through shared crate upgrades, for everyone | The rules in §3 "Keeping the cameras safe"; the helper process in §7 if a crash ever traces back to it. |
 | Off the product's main purpose | More to maintain for a side feature | Two self-contained crates and one tab; D7 ties it to cameras. |
 
 ## 7. Deferred or dropped
@@ -351,3 +399,10 @@ a separate plan before starting; this plan only keeps `rtspcam-audio`'s input si
   recording): possible with songbird, but the tab is designed for one channel; revisit after
   D4.
 - **Music from files** and effects: not this app's job.
+- **A separate helper process** (`rtspcam-discord.exe`, started by the app, JSON lines over its
+  stdin/stdout, restarted with backoff if it exits, quits when its stdin closes): the
+  strongest isolation, since a native crash would end only the helper, and with its own
+  Cargo workspace it would also stop sharing crate versions. Not done now because it adds a
+  protocol, a supervisor and a second executable to every package, for a crash that is
+  unlikely and only possible while the bot is in use. It is the fallback if one shows up;
+  §3 rule 5 keeps the move small.
